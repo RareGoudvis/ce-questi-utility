@@ -224,13 +224,14 @@
     tops.forEach(function (t) {
       var subj = isSubjectTop(t);
       var active = String(mgr.tagFilter) === String(t.id);
+      // No count on chips: Questi's per-tag number_of_lessons is a stale server cache (counts
+      // deleted fiches). The accurate "N fiches" line below the search is the source of truth.
       row1.appendChild(chipEl((t.title || "").trim(), (t.color || "#c7ccd1"), active,
-        subj ? function () { loadListUnion(t.id); } : function () { mgr.expandedTop = null; loadList(t.id); },
-        t.number_of_lessons));
+        subj ? function () { loadListUnion(t.id); } : function () { mgr.expandedTop = null; loadList(t.id); }));
     });
     // "Zonder tag" (default tag id 1) — untagged / old-year triage.
     var zt = ownTagById(1) || { id: 1, title: "Zonder tag", color: "#c7ccd1" };
-    row1.appendChild(chipEl((zt.title || "Zonder tag").trim(), "#c7ccd1", String(mgr.tagFilter) === "1", function () { mgr.expandedTop = null; loadList(1); }, zt.number_of_lessons));
+    row1.appendChild(chipEl((zt.title || "Zonder tag").trim(), "#c7ccd1", String(mgr.tagFilter) === "1", function () { mgr.expandedTop = null; loadList(1); }));
     bar.appendChild(row1);
     // Subtag row for the expanded subject: "Alle [vak]" union chip + each subtag.
     if (mgr.expandedTop != null) {
@@ -241,7 +242,7 @@
         var row2 = h("div", { class: "qwl-tagrow qwl-subrow" });
         row2.appendChild(chipEl("Alle " + (parent.title || "").trim(), (parent.color || "#c7ccd1"), String(mgr.unionParent) === String(parent.id), function () { loadListUnion(parent.id); }));
         kids.forEach(function (k) {
-          row2.appendChild(chipEl((k.title || "").trim(), (k.color || "#c7ccd1"), (String(mgr.tagFilter) === String(k.id) && mgr.unionParent == null), function () { loadList(k.id); }, k.number_of_lessons));
+          row2.appendChild(chipEl((k.title || "").trim(), (k.color || "#c7ccd1"), (String(mgr.tagFilter) === String(k.id) && mgr.unionParent == null), function () { loadList(k.id); }));
         });
         bar.appendChild(row2);
       }

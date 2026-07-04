@@ -524,9 +524,12 @@
       if (r.ok && !(j && j.status === "error")) return j;
       var msg = (j && (j.error_msg || j.message)) || ("HTTP " + r.status);
       console.error("[QWP] " + kind + " " + id + " failed:", msg, "| body:", JSON.stringify(j), "| sent:", JSON.stringify(sent));
-      throw new Error(msg);
+      var err = new Error(msg); err.httpStatus = r.status; throw err;
     });
   }
+  // Gateway timeouts (nginx 504 etc.) mean Questi was slow to answer — the write usually STILL
+  // lands (confirmed). Treat these as "verify, don't fail".
+  function isGatewayError(e) { var s = e && e.httpStatus; return s === 502 || s === 503 || s === 504 || s === 408 || s === 524 || s === 0; }
   // Recurring lesuren need the occurrence window (range_startdate/enddate) so the edit
   // hits ONLY this week's occurrence, never the whole series (apply_to_next_items=false).
   function patchItem(id, body, range) {
@@ -1699,7 +1702,7 @@
     var ov = h("div", { class: "qwp-commit-overlay", id: "qwp-commit-overlay" }, [
       h("div", { class: "qwp-commit-card" }, [
         h("div", { class: "qwp-spinner" }),
-        h("div", { class: "qwp-commit-msg", id: "qwp-commit-msg", text: "Bezig met wegschrijven — even geduld, niet bewerken…" }),
+        h("div", { class: "qwp-commit-msg", id: "qwp-commit-msg", text: "Bezig met wegschrijven — even geduld, niet bewerken. Herhalende lesuren kunnen traag zijn." }),
         h("div", { class: "qwp-progress" }, [bar]),
         lbl
       ])
@@ -2259,12 +2262,27 @@
       (p.fiche ? ((p.fiche.isMethod || view.methodFicheIds[String(p.fiche.contentId)]) ? postMethodAttachment(p.itemId, p.fiche.contentId, p.fiche.groups) : postAttachment(p.itemId, p.fiche.contentId, p.fiche.groups)) : Promise.resolve(null))
         .then(function (res) { var t = res && res.result && res.result.title; if (t) p.patchBody.title = t; return patchItem(p.itemId, p.patchBody, p.range); })
         .then(function () { ok++; })
-        // Continue on error — record it and keep going so one bad row can't block the rest.
-        .catch(function (e) { fails.push({ label: p.label, error: String(e && e.message || e) }); })
+        // Continue on error. A gateway timeout (504 …) usually still lands → re-read + verify
+        // instead of hard-failing; only a mismatch is reported as uncertain.
+        .catch(function (e) {
+          if (isGatewayError(e)) return verifyLanded(p).then(function (landed) { if (landed) ok++; else fails.push({ label: p.label, error: "onzeker (504) — controleer/hertry deze" }); });
+          fails.push({ label: p.label, error: String(e && e.message || e) });
+        })
         // Small delay between slots — sequential PATCH→POST, avoid rate-limiting (no bulk endpoint exists).
         .then(function () { var done = ok + fails.length; setStatus("Wegschrijven " + done + "/" + plan.length + "…"); updateCommitOverlay(done, plan.length); setTimeout(next, 150); });
     }
     next();
+  }
+  // After a gateway timeout, re-read the item and check it reflects the intended end-state.
+  function verifyLanded(p) {
+    return new Promise(function (res) { setTimeout(res, 1500); })
+      .then(function () { return fetchItemDetail(p.itemId); })
+      .then(function (d) {
+        if (!d) return false;
+        var has = !!d.has_attachments;
+        if (p.fiche) return has;                                   // fiche link → attachment present
+        return !has && String(d.title || "") === String(p.patchBody.title || ""); // clear → no attachment + title matches
+      }).catch(function () { return false; });
   }
 
   // ---------- Loading ----------
