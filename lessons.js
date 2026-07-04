@@ -601,6 +601,47 @@
   }
 
   // ------------------------------------------------------------------------
+  //  Backup-on-delete — dump full editable content to a JSON file before the
+  //  irreversible DELETE, so deleted fiches (incl. ZILL/OPSTAP goals) can be rebuilt.
+  // ------------------------------------------------------------------------
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+  function tsStamp() { var d = new Date(); return d.getFullYear() + pad2(d.getMonth() + 1) + pad2(d.getDate()) + "-" + pad2(d.getHours()) + pad2(d.getMinutes()) + pad2(d.getSeconds()); }
+  function downloadFichesBackup(data) {
+    try {
+      var payload = { tool: "Questi Lesfiche-manager", exported_at: new Date().toISOString(), count: data.length, fiches: data };
+      var blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      var url = URL.createObjectURL(blob);
+      var a = h("a", { href: url, download: "questi-lesfiches-backup-" + tsStamp() + ".json", style: "display:none" });
+      mgr.els.page.appendChild(a); a.click();
+      setTimeout(function () { a.remove(); URL.revokeObjectURL(url); }, 0);
+      return true;
+    } catch (e) { console.error("[QWL] backup-download faalde:", e); return false; }
+  }
+  // Read full content per id (best-effort, sequential), download whatever we captured,
+  // and report which ids failed to read. Never deletes — that's the caller's decision.
+  function backupBeforeDelete(ids, prog) {
+    var captured = [];
+    return runSequential(ids, function (id) {
+      return readFicheEdit(id).then(function (edit) {
+        var f = fiskById(id);
+        captured.push({
+          id: id,
+          subject: (edit && edit.subject) || (f && f.subject) || "",
+          grades: (edit && edit.grades) || (f && f.grades) || [],
+          tags: (edit && edit.tags) || [],
+          tagIds: mgr.tagChips[id] || [],
+          fields: (edit && edit.fields) || []
+        });
+      });
+    }, function (done, total) { if (prog) prog.update(done, total); }).then(function (fails) {
+      // Record read-failures too, with whatever list-level data we still have.
+      fails.forEach(function (fl) { var id = fl.item, f = fiskById(id); captured.push({ id: id, subject: (f && f.subject) || "", grades: (f && f.grades) || [], tagIds: mgr.tagChips[id] || [], fields: [], __backup_incomplete: true }); });
+      var downloaded = downloadFichesBackup(captured);
+      return { downloaded: downloaded, failed: fails };
+    });
+  }
+
+  // ------------------------------------------------------------------------
   //  Bulk delete — typed confirm + test-one-first (irreversible)
   // ------------------------------------------------------------------------
   function openDeleteModal() {
@@ -622,12 +663,22 @@
     var batch = testOnly ? ids.slice(0, 1) : ids;
     m.close();
     var prog = progressModal(testOnly ? "Testverwijdering" : "Verwijderen");
-    prog.update(0, 1);
-    deleteFiches(batch).then(function () {
-      var gone = {}; batch.forEach(function (id) { gone[id] = true; delete mgr.selected[id]; delete mgr.tagChips[id]; });
-      mgr.fiches = mgr.fiches.filter(function (f) { return !gone[f.id]; });
-      prog.done([], batch.length); applyFilter();
-      if (testOnly) setStatus("1 verwijderd — controleer in Questi, verwijder daarna de rest.");
+    prog.update(0, batch.length);
+    setStatus("Back-up maken vóór verwijderen…");
+    // Irreversible: back up FULL content first, then delete. If the backup couldn't be fully
+    // captured, make the user explicitly confirm deleting without a complete safety net.
+    backupBeforeDelete(batch, prog).then(function (backup) {
+      if (backup.failed.length && !window.confirm("Back-up mislukt voor " + backup.failed.length + " van " + batch.length + " fiche(s). Toch definitief verwijderen zonder volledige back-up?")) {
+        prog.done([{ error: "Geannuleerd — geen volledige back-up." }], batch.length);
+        return;
+      }
+      prog.update(0, batch.length);
+      return deleteFiches(batch).then(function () {
+        var gone = {}; batch.forEach(function (id) { gone[id] = true; delete mgr.selected[id]; delete mgr.tagChips[id]; });
+        mgr.fiches = mgr.fiches.filter(function (f) { return !gone[f.id]; });
+        prog.done([], batch.length); applyFilter();
+        setStatus(testOnly ? "1 verwijderd (back-up gedownload) — controleer in Questi, verwijder daarna de rest." : (batch.length + " verwijderd — back-up gedownload."));
+      });
     }).catch(function (e) { prog.done([{ error: (e && e.message) || String(e) }], batch.length); });
   }
 

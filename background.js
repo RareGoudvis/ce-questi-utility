@@ -23,3 +23,19 @@ chrome.action.onClicked.addListener(function (tab) {
 chrome.commands.onCommand.addListener(function (command) {
   if (command === "toggle-planner") toggleActiveTab();
 });
+
+// Version check: the content script asks the worker to fetch the repo's version.json
+// (cross-origin fetch is clean here — host is in host_permissions, no page CSP/CORS in play).
+// Never throws back to the caller; on any failure it just returns { ok:false }.
+var QWP_VERSION_URL = "https://raw.githubusercontent.com/RareGoudvis/questi-calendar-workflow-fix/main/version.json";
+chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
+  if (!msg || msg.type !== "QWP_CHECK_VERSION") return; // not ours → let other listeners handle
+  fetch(QWP_VERSION_URL, { cache: "no-store" })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (j) {
+      if (j && j.version) sendResponse({ ok: true, latest: String(j.version), url: j.url || QWP_VERSION_URL });
+      else sendResponse({ ok: false });
+    })
+    .catch(function () { sendResponse({ ok: false }); });
+  return true; // keep the message channel open for the async sendResponse
+});

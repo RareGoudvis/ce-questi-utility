@@ -75,7 +75,7 @@
   var LESSONS_CHIP = { attr: "data-qwl-launcher", title: "Lesfiches beheren", label: "Lesfiches", icon: DOC_ICON, floatRight: 158, onClick: function () { if (typeof window.__QWP_OPEN_LESSONS === "function") window.__QWP_OPEN_LESSONS(); } };
   // The launcher belongs only on the calendar view. Questi is an SPA, so the URL can
   // change without a reload — gate on the current path and remove the button elsewhere.
-  function onCalendar() { return (location.pathname || "").indexOf("/calendar") !== -1; }
+  function onCalendar() { return /\/(calendar|kalender|agenda)/i.test(location.pathname || ""); }
   function haveChips() { return document.querySelector("[data-qwp-launcher]") && document.querySelector("[data-qwl-launcher]"); }
   function removeLauncher() {
     var a = document.querySelector("[data-qwp-launcher]"); if (a) a.remove();
@@ -109,5 +109,17 @@
       if (!haveChips()) scheduleLauncher();
     });
     mo.observe(document.documentElement, { childList: true, subtree: true });
+    // Backstop: if the toolbar anchor is never found (SPA/DOM change), guarantee an entry
+    // point by dropping the floating chips ~2.5s in. Common case: chips are already inline by
+    // then, so haveChips() short-circuits this. Floating chips carry the same data-attrs, so no
+    // duplicate insert. (Alt+P already rescues the planner; this is the only rescue for Lesfiches.)
+    setTimeout(function () {
+      try {
+        if (onCalendar() && !haveChips() && document.body) {
+          document.body.appendChild(makeChip(PLANNER_CHIP, true));
+          document.body.appendChild(makeChip(LESSONS_CHIP, true));
+        }
+      } catch (e) { /* no-op */ }
+    }, 2500);
   } catch (e) { /* no-op */ }
 })();

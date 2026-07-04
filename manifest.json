@@ -4,7 +4,7 @@
   "version": "0.4.0",
   "description": "Plan a full week (or two weeks side by side) of lessons fast, then review before committing.",
   "permissions": ["storage", "activeTab", "scripting"],
-  "host_permissions": ["*://www.questi.com/*"],
+  "host_permissions": ["*://*.questi.com/*", "*://questi.com/*", "https://raw.githubusercontent.com/*"],
   "background": { "service_worker": "background.js" },
   "action": {
     "default_title": "Questi Week Planner (Alt+P)",
@@ -27,7 +27,7 @@
   },
   "content_scripts": [
     {
-      "matches": ["*://www.questi.com/*"],
+      "matches": ["*://*.questi.com/*", "*://questi.com/*"],
       "js": ["planner.js", "lessons.js", "content.js"],
       "css": ["planner.css", "lessons.css"],
       "run_at": "document_idle"

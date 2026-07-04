@@ -75,22 +75,11 @@
   // Map a live top-tag id back to a VAKKEN vak id (Instellingen slot→vak). Unknown
   // tags (media, schrift, …) → null (no Instellingen preference).
   function vakIdForTag(tagId) { for (var i = 0; i < VAKKEN.length; i++) if (view.vakTagMap[VAKKEN[i].id] != null && String(view.vakTagMap[VAKKEN[i].id]) === String(tagId)) return VAKKEN[i].id; return null; }
-  // Guess the live top-tag id for a slot title (e.g. "Cijferen tot 100" → wiskunde
-  // tag) so the slot popup pre-selects the right vak with no manual pick.
-  function guessVakTagFromTitle(title) {
-    var t = title || ""; if (!t) return null;
-    for (var i = 0; i < VAKKEN.length; i++) {
-      var v = VAKKEN[i], tid = vakTagId(v.id);
-      if (tid == null) continue;
-      if (v.re.test(t) || v.names.test(t)) return tid;
-    }
-    return null;
-  }
 
   // ---------- Storage ----------
   var STORE_KEY = "qwp_state_v6";
   function mkPanel(vak, sort) { return { source: "self", sortDir: sort || "az", filterVak: vak || null, filterTagId: null, hideUsed: false, gradeFilter: null }; }
-  var state = { colleagues: [], settings: {}, weeks: 1, panelCount: 2, pickerView: "list", splitRatio: 0.58, manualSchoolId: null, manualSchoolyear: null, manualOwnTagId: null, panels: [mkPanel(null, "az"), mkPanel(null, "az"), mkPanel(null, "az")] };
+  var state = { colleagues: [], settings: {}, weeks: 1, panelCount: 2, pickerView: "list", splitRatio: 0.58, manualSchoolId: null, manualSchoolyear: null, manualOwnTagId: null, saveThrottleMs: 250, panels: [mkPanel(null, "az"), mkPanel(null, "az"), mkPanel(null, "az")] };
   function loadState() {
     return new Promise(function (res) {
       try {
@@ -383,6 +372,13 @@
   }
   function fetchItems(startISO, endISO) { return apiItems(startISO, endISO, ctx.calendarId ? [ctx.calendarId, "cal_holidays"] : null); }
   function fetchItemDetail(id) { return jget(API + "/items/" + id + "?" + qs({ schoolId: ctx.schoolId })).then(function (j) { return (j && j.result) || j; }); }
+  // Pick the lesfiche attachment (id_type 1). Falls back to the first attachment, so behavior is
+  // identical to the old attachments[0] whenever the lesfiche is the only/first one — but stays
+  // correct if Questi ever adds a sibling attachment of another type ahead of it (additive change).
+  function ficheAttachment(list) {
+    var a = (list && list.length) ? list : [];
+    return a.filter(function (x) { return x && (x.id_type === 1 || x.id_type === "1"); })[0] || a[0] || null;
+  }
 
   function isOwnSource(ownerId) { return ownerId == null || ownerId === "self" || (ctx.ownerId != null && String(ownerId) === String(ctx.ownerId)); }
   function lessonsGet(params) {
@@ -523,20 +519,39 @@
     return r.json().catch(function () { return null; }).then(function (j) {
       if (r.ok && !(j && j.status === "error")) return j;
       var msg = (j && (j.error_msg || j.message)) || ("HTTP " + r.status);
-      console.error("[QWP] " + kind + " " + id + " failed:", msg, "| body:", JSON.stringify(j), "| sent:", JSON.stringify(sent));
+      // Gateway timeouts are expected + handled (doCommit re-verifies via verifyLanded), so log
+      // them as a warning — a red console.error clutters chrome://extensions "Fouten" and alarms
+      // non-technical users for something the tool already recovers from. Real errors stay red.
+      var gw = (r.status === 502 || r.status === 503 || r.status === 504 || r.status === 408 || r.status === 524 || r.status === 0);
+      (gw ? console.warn : console.error)("[QWP] " + kind + " " + id + (gw ? " gateway-timeout (wordt geverifieerd):" : " failed:"), msg, "| body:", JSON.stringify(j), "| sent:", JSON.stringify(sent));
       var err = new Error(msg); err.httpStatus = r.status; throw err;
     });
   }
   // Gateway timeouts (nginx 504 etc.) mean Questi was slow to answer — the write usually STILL
   // lands (confirmed). Treat these as "verify, don't fail".
   function isGatewayError(e) { var s = e && e.httpStatus; return s === 502 || s === 503 || s === 504 || s === 408 || s === 524 || s === 0; }
+  function sleep(ms) { return new Promise(function (res) { setTimeout(res, ms); }); }
+  // Single write path for PATCH/POST. Retries on HTTP 429 (rate limit) with capped backoff
+  // (1s → 2s → 4s, max 3 retries), then rethrows so doCommit's existing gateway/verify handling
+  // stays in charge of every other error. Behaviorally identical to a plain fetch when no 429.
+  function doWrite(kind, id, url, method, bodyObj) {
+    var attempt = 0;
+    function go() {
+      return fetch(url, { method: method, credentials: "include", headers: writeHeaders(), body: JSON.stringify(bodyObj) })
+        .then(function (r) { return resolveWrite(kind, id, r, bodyObj); })
+        .catch(function (e) {
+          if (e && e.httpStatus === 429 && attempt < 3) { attempt++; return sleep(1000 * Math.pow(2, attempt - 1)).then(go); }
+          throw e;
+        });
+    }
+    return go();
+  }
   // Recurring lesuren need the occurrence window (range_startdate/enddate) so the edit
   // hits ONLY this week's occurrence, never the whole series (apply_to_next_items=false).
   function patchItem(id, body, range) {
     var q = { schoolId: ctx.schoolId, schoolyear: ctx.schoolyear, apply_to_next_items: false };
     if (range && range.start && range.end) { q.range_startdate = range.start; q.range_enddate = range.end; }
-    return fetch(API + "/items/" + id + "?" + qs(q),
-      { method: "PATCH", credentials: "include", headers: writeHeaders(), body: JSON.stringify(body) }).then(function (r) { return resolveWrite("PATCH item", id, r, body); });
+    return doWrite("PATCH item", id, API + "/items/" + id + "?" + qs(q), "PATCH", body);
   }
   // PATCH item.groups are OBJECTS [{groupId,schoolId}]; the attachment POST wants RAW ids
   // ([326]). Both tolerate a read shape that uses `id` instead of `groupId`.
@@ -556,8 +571,7 @@
   }
   function postAttachment(id, lessonContentId, groups) {
     var payload = { attachments: [{ schoolId: ctx.schoolId, visible_parents: false, visible_students: false, students: [], groups: groupIds(groups), id: lessonContentId, typeId: 1 }] };
-    return fetch(API + "/items/" + id + "/attachments?" + qs({ schoolId: ctx.schoolId, schoolyear: ctx.schoolyear }),
-      { method: "POST", credentials: "include", headers: writeHeaders(), body: JSON.stringify(payload) }).then(function (r) { return resolveWrite("POST attachment", id, r, payload); });
+    return doWrite("POST attachment", id, API + "/items/" + id + "/attachments?" + qs({ schoolId: ctx.schoolId, schoolyear: ctx.schoolyear }), "POST", payload);
   }
   // Methode-fiches are vendor content and are NOT attachable via the normal endpoint
   // (that 1235s "no access to lesson"). Questi links them through a dedicated route:
@@ -565,8 +579,7 @@
   // methode-fiche id (from /methods/{key}/lessons). Response carries the decorated title.
   function postMethodAttachment(id, lessonId, groups) {
     var payload = { schoolId: ctx.schoolId, visible_parents: false, visible_students: false, students: [], groups: groupIds(groups), id: lessonId };
-    return fetch(API + "/items/" + id + "/attachments/methodlesson?" + qs({ schoolId: ctx.schoolId, schoolyear: ctx.schoolyear }),
-      { method: "POST", credentials: "include", headers: writeHeaders(), body: JSON.stringify(payload) }).then(function (r) { return resolveWrite("POST methodlesson", id, r, payload); });
+    return doWrite("POST methodlesson", id, API + "/items/" + id + "/attachments/methodlesson?" + qs({ schoolId: ctx.schoolId, schoolyear: ctx.schoolyear }), "POST", payload);
   }
 
   // ---------- Domain helpers ----------
@@ -581,7 +594,10 @@
   function descFor(slot) {
     if (slot.isGym) return null;
     if (slot.themaFiche) return "Zie themafiche.";
-    var top = topTagIdOf(slot.vak || guessVakTagFromTitle(slot.title));
+    // Description = the LIVE top-level tag ("vak") the fiche was filtered/picked under. No
+    // title-guessing: downstream tooling reads this to disambiguate same-titled fiches
+    // (e.g. "Thema 5 - Les …"), so it must be the real tag, never a heuristic from the title.
+    var top = topTagIdOf(slot.vak);
     return top != null ? ((tagTitle("self", top) || "").trim()) : "";
   }
   function toHtmlDesc(t) { if (t == null) return ""; return String(t).replace(/\n/g, "<br />"); }
@@ -684,7 +700,7 @@
           return fetchItemDetail(s.itemId).then(function (d) {
             if (!d) return;
             s.origDescription = d.description || ""; s.description = s.origDescription;
-            var att = d.attachments && d.attachments[0];
+            var att = ficheAttachment(d.attachments);
             if (att && att.content) { s.origFicheContentId = att.content.id; s.ficheContentId = att.content.id; s.origFicheTitle = att.content.subject || ""; s.ficheTitle = s.origFicheTitle; }
             // The authoritative group id lives here (list groups are always empty); keep it.
             if (d.groups && d.groups.length) { s.groups = d.groups; if (ctx.groupId == null) ctx.groupId = firstGroupId(d.groups); }
@@ -873,8 +889,8 @@
         var label, color = null;
         if (s.isGym) label = "Gym";
         else {
-          // Subject = the top-level tag, from the slot's vak or guessed from the title.
-          var top = topTagIdOf(s.vak || guessVakTagFromTitle(s.title));
+          // Subject = the slot's live top-level tag (same source as the written description).
+          var top = topTagIdOf(s.vak);
           label = top != null ? ((tagTitle("self", top) || "").trim() || "Overig") : "Overig";
           if (top != null) color = tagColor("self", top);
         }
@@ -1204,8 +1220,9 @@
     // Vak dropdown = the user's LIVE top tags (server-side fetch by tag), so the
     // search only ever shows fiches actually under that tag — no title-regex leak.
     var tops = panelTopTags("self");
-    // s.vak holds a live top-tag id; if unset, pre-select the guess from the title.
-    var curTagId = (s.vak ? (+s.vak) : guessVakTagFromTitle(s.title));
+    // s.vak holds a live top-tag id; if unset, no vak is pre-selected (no title-guessing —
+    // the vak must come from a real tag pick so the written description stays authoritative).
+    var curTagId = (s.vak ? (+s.vak) : null);
     var vakSel = h("select", { class: "qwp-input", id: "qwp-pop-vak" },
       [h("option", { value: "", text: "— kies vak —" })].concat(tops.map(function (t) { return h("option", { value: t.id, text: (t.title || "").trim(), selected: (String(curTagId) === String(t.id) ? "selected" : null) }); })));
     var searchInp = h("input", { class: "qwp-input", id: "qwp-pop-search", placeholder: "Zoek in eigen lesfiches…", value: (s.ficheTitle || "") });
@@ -1223,7 +1240,7 @@
       items.sort(function (a, b) { return (a.subject || "").localeCompare(b.subject || "", undefined, { numeric: true }); });
       items.slice(0, 300).forEach(function (f) {
         results.appendChild(h("div", {
-          class: "qwp-result", onclick: function () { pushUndo("fiche toewijzen"); assignFiche(s, f); s.vak = (curTagId != null ? curTagId : (guessVakTagFromTitle(f.subject) || s.vak)); searchInp.value = f.subject || ""; renderTimetable(); setStatus("Toegewezen: " + (f.subject || "")); }
+          class: "qwp-result", onclick: function () { pushUndo("fiche toewijzen"); assignFiche(s, f); s.vak = (curTagId != null ? curTagId : (s.vak || "")); searchInp.value = f.subject || ""; renderTimetable(); setStatus("Toegewezen: " + (f.subject || "")); }
         }, [h("span", { class: "qwp-result-t", text: f.subject || "(zonder titel)" }), usedThisYear(f) ? h("span", { class: "qwp-used", text: "gebruikt" }) : null]));
       });
       if (!items.length) results.appendChild(h("div", { class: "qwp-result", text: noVak ? "Geen fiches gevonden." : "Geen fiches in dit vak." }));
@@ -1327,7 +1344,9 @@
       res.innerHTML = "";
       if (!rows.length) { res.appendChild(h("div", { class: "qwp-gsearch-msg", text: "Geen resultaten." })); return; }
       rows.slice(0, 60).forEach(function (r) {
-        var pickData = { id: r.f.id, subject: r.f.subject, tagId: (String(r.owner) === String(myId()) ? guessVakTagFromTitle(r.f.subject) : null), owner: r.owner, isMethod: !!r.f.__method };
+        // Global search spans all vakken/owners → no single reliable tag; leave the vak unset
+        // (the target slot keeps its Instellingen-preset vak, if any). No title-guessing.
+        var pickData = { id: r.f.id, subject: r.f.subject, tagId: null, owner: r.owner, isMethod: !!r.f.__method };
         var row = h("div", {
           class: "qwp-gsearch-row", draggable: "true", title: r.f.subject || "",
           ondragstart: function (e) { e.dataTransfer.setData("text/plain", JSON.stringify(pickData)); startDragTargets(pickData.tagId); },
@@ -1348,7 +1367,7 @@
     if (!s || !isTargetable(s)) { setStatus("Sleep de fiche op een leeg lesuur (of open eerst een lesuur)."); return; }
     pushUndo("fiche toewijzen (zoek)");
     assignFiche(s, { id: f.id, subject: f.subject, isMethod: !!f.__method });
-    var g = guessVakTagFromTitle(f.subject); if (g) s.vak = g;
+    // Keep the slot's existing/preset vak — global search has no reliable tag (no title-guess).
     renderTimetable(); setStatus("Toegewezen: " + (f.subject || ""));
   }
 
@@ -1671,6 +1690,38 @@
     timer = setTimeout(close, 8000);
   }
 
+  // ---------- Update banner (compares installed version to repo version.json) ----------
+  // Numeric-part compare: >0 if a is newer than b. Non-numeric parts count as 0.
+  function cmpVersion(a, b) {
+    var pa = String(a || "0").split("."), pb = String(b || "0").split(".");
+    for (var i = 0; i < Math.max(pa.length, pb.length); i++) {
+      var na = parseInt(pa[i], 10) || 0, nb = parseInt(pb[i], 10) || 0;
+      if (na !== nb) return na - nb;
+    }
+    return 0;
+  }
+  function showUpdateBanner(url) {
+    if (elId("qwp-banner")) return;
+    var banner = h("div", { class: "qwp-banner", id: "qwp-banner" }, [
+      h("span", { text: "Nieuwe versie van de Questi Weekplanner beschikbaar — " }),
+      h("a", { class: "qwp-banner-link", href: url || "#", target: "_blank", rel: "noopener", text: "download hier" }),
+      h("button", { class: "qwp-banner-x", title: "Verbergen", text: "×", onclick: function () { banner.remove(); } })
+    ]);
+    els.page.insertBefore(banner, els.page.firstChild);
+  }
+  // Ask the service worker (which can fetch GitHub cleanly) for the latest version.
+  // Fully best-effort: any error → no banner, boot is never blocked.
+  function checkForUpdate() {
+    try {
+      if (!(chrome && chrome.runtime && chrome.runtime.sendMessage)) return;
+      var installed = (chrome.runtime.getManifest && chrome.runtime.getManifest().version) || "0";
+      chrome.runtime.sendMessage({ type: "QWP_CHECK_VERSION" }, function (resp) {
+        void chrome.runtime.lastError;
+        if (resp && resp.ok && cmpVersion(resp.latest, installed) > 0) showUpdateBanner(resp.url);
+      });
+    } catch (e) { /* never block boot on the update check */ }
+  }
+
   // ---------- Undo (per-slot snapshot stack; Ctrl+Z + sidebar button) ----------
   // Only these slot fields are mutated by planning actions, so snapshot just them.
   function snapshotSlots() {
@@ -1837,7 +1888,7 @@
       return diagGet(API + "/items/" + it.id + "?" + qs({ schoolId: ctx.schoolId })).then(function (res) {
         var d = (res.json && res.json.result) || res.json; shared.detail = d;
         if (!d) return { status: STAT.FAIL, expected: "detail-object", found: "leeg", next: "detail-endpoint gewijzigd." };
-        var att = d.attachments && d.attachments[0];
+        var att = ficheAttachment(d.attachments);
         var info = "description:" + (has(d, "description") ? "ja" : "nee") + ", attachments:" + ((d.attachments || []).length);
         if (att && !(att.content && att.content.id != null)) return { status: STAT.FAIL, expected: "attachments[0].content.id", found: "content.id ontbreekt", next: "attach-linking id-mapping controleren." };
         return { expected: "description + attachments[].content.id", found: info };
@@ -1882,11 +1933,12 @@
       if (!calOk || !grpOk) return { status: STAT.WARN, expected: "cal/group in live items", found: found, next: "calendar/group id mogelijk gerold — detectContext controleren." };
       return { expected: "alle ids gedetecteerd + teruggevonden", found: found };
     }));
-    checks.push(wrap("Vak → live tag mapping", "context", function () {
-      // A vak may legitimately have no sub-tags — only failing to map at all is a problem.
-      var miss = VAKKEN.filter(function (v) { return view.vakTagMap[v.id] == null; }).map(function (v) { return v.id; });
-      if (miss.length) return { status: STAT.WARN, expected: "vakken gekoppeld aan live tags", found: "niet gekoppeld: " + miss.join(","), next: "VAKKEN.names of tagboom controleren (" + miss.join(",") + ")." };
-      return { expected: "elk vak → een live top-tag", found: (VAKKEN.length - miss.length) + "/" + VAKKEN.length + " gekoppeld" };
+    checks.push(wrap("Vak → live tag mapping (enkel voor oude instellingen)", "context", function () {
+      // This map now ONLY migrates legacy Instellingen (old string-based "vast vak per lesuur")
+      // to live tag ids. The written description + all filtering use your live tags directly, so
+      // canonical vakken that don't map are harmless on accounts with differently-named tags.
+      var mapped = VAKKEN.filter(function (v) { return view.vakTagMap[v.id] != null; }).length;
+      return { expected: "n.v.t. tenzij oude instellingen", found: mapped + "/" + VAKKEN.length + " canonieke vakken herkend (rest onschadelijk)" };
     }));
     checks.push(wrap("Schooljaar vs. datum", "context", function () {
       var d = new Date(), y = d.getFullYear(), start = (d.getMonth() >= 7) ? y : y - 1;
@@ -1903,8 +1955,12 @@
       var tmp = { itemId: it.id, title: (it.title || "") + " ", origTitle: it.title || "", startdate: it.startdate, enddate: it.enddate, idCalendar: it.id_calendar, isEditable: true, dayIdx: 0, weekIdx: 0, time: timeFromISO(it.startdate), groups: (it.groups && it.groups.length) ? it.groups : writeGroups(), isGym: false, themaFiche: false, origDescription: "", description: "", ficheContentId: null, origFicheContentId: null, ficheTitle: "", origFicheTitle: "", starttime: "", endtime: "" };
       var plan = buildCommitPlan([tmp]);
       if (!plan.length) return { status: STAT.WARN, found: "geen plan (niet dirty?)", next: "buildCommitPlan/computeDirty controleren." };
-      var diff = keyDiff(Object.keys(plan[0].patchBody), REF_PATCH_KEYS);
-      if (diff.ok) return { expected: REF_PATCH_KEYS.length + " sleutels", found: "identiek aan referentie" };
+      // `attachments:[]` is a LEGITIMATE optional key on fiche-less/detach rows (see buildCommitPlan);
+      // exclude it so the check validates the required keys and doesn't false-FAIL on a detach sample.
+      var keys = Object.keys(plan[0].patchBody).filter(function (k) { return k !== "attachments"; });
+      var diff = keyDiff(keys, REF_PATCH_KEYS);
+      var attNote = ("attachments" in plan[0].patchBody) ? " (+attachments: detach-rij, ok)" : "";
+      if (diff.ok) return { expected: REF_PATCH_KEYS.length + " sleutels", found: "identiek aan referentie" + attNote };
       return { status: STAT.FAIL, expected: REF_PATCH_KEYS.join(","), found: "mist:[" + diff.missing.join(",") + "] extra:[" + diff.extra.join(",") + "]", next: "buildCommitPlan.patchBody aanpassen aan referentie." };
     }));
     checks.push(wrap("Attachment-body vs. referentie", "write", function () {
@@ -1915,7 +1971,7 @@
     }));
     checks.push(wrap("id-gelijkwaardigheid (content.id ↔ lesfiche)", "write", function () {
       if (!shared.authed) return { status: STAT.SKIP, found: "geen sessie" };
-      var att = shared.detail && shared.detail.attachments && shared.detail.attachments[0];
+      var att = ficheAttachment(shared.detail && shared.detail.attachments);
       if (!att || !att.content || att.content.id == null) return { status: STAT.SKIP, found: "geen gekoppelde fiche in sample" };
       var cid = att.content.id;
       return diagGet(API + "/lessons/" + cid + "?" + qs({ schoolId: ctx.schoolId, return_format: "view" })).then(function (res) {
@@ -1967,13 +2023,19 @@
       }
     });
 
+    var throttleInp = h("input", { class: "qwp-input", type: "number", min: "0", max: "10000", step: "50", style: "width:130px", value: String(state.saveThrottleMs != null ? state.saveThrottleMs : 250) });
+    var throttleField = h("div", { class: "qwp-field", style: "margin-top:16px;border-top:1px solid var(--line-soft);padding-top:14px" }, [
+      h("label", { text: "Vertraging tussen opgeslagen lesuren (ms)" }),
+      throttleInp,
+      h("div", { class: "qwp-note", style: "margin-top:6px", text: "Basisvertraging + toevallige spreiding, zodat het opslaan niet als een machine oogt. Verhoog dit (bv. 2000) als Questi klaagt dat je te snel opslaat. Standaard 250." })
+    ]);
     var modal = h("div", { class: "qwp-modal", id: "qwp-modal" }, [
       h("div", { class: "qwp-modal-box qwp-inst-modal" }, [
         h("div", { class: "qwp-modal-hd", text: "Instellingen — vast vak per lesuur" }),
-        h("div", { class: "qwp-modal-body" }, [h("p", { class: "qwp-note", text: "Dit is de standaard die elke week geldt. Ze bepaalt welk vak 'Add selectie' automatisch in een leeg lesuur plaatst." }), grid]),
+        h("div", { class: "qwp-modal-body" }, [h("p", { class: "qwp-note", text: "Dit is de standaard die elke week geldt. Ze bepaalt welk vak 'Add selectie' automatisch in een leeg lesuur plaatst." }), grid, throttleField]),
         h("div", { class: "qwp-modal-ft" }, [
           h("button", { class: "qwp-btn qwp-ghost", text: "Sluiten", onclick: function () { modal.remove(); } }),
-          h("button", { class: "qwp-btn qwp-approve", text: "Bewaren", onclick: function () { saveState(); modal.remove(); reloadSlotVakLabels(); renderTimetable(); setStatus("Instellingen bewaard — geldt voor elke week."); } })
+          h("button", { class: "qwp-btn qwp-approve", text: "Bewaren", onclick: function () { var tv = parseInt(throttleInp.value, 10); state.saveThrottleMs = (isNaN(tv) || tv < 0) ? 250 : Math.min(tv, 10000); saveState(); modal.remove(); reloadSlotVakLabels(); renderTimetable(); setStatus("Instellingen bewaard — geldt voor elke week."); } })
         ])
       ])
     ]);
@@ -2224,6 +2286,13 @@
     ]);
     els.page.appendChild(modal);
   }
+  // Human-ish spacing between writes: a base delay + random jitter, so the burst is never
+  // perfectly periodic (metronomic timing is itself a bot fingerprint). Base is configurable
+  // via Instellingen; raise it if Questi ever complains about write rate.
+  function commitDelay() {
+    var base = (state.saveThrottleMs != null ? state.saveThrottleMs : 250);
+    return base + Math.floor(Math.random() * (base > 0 ? base : 150));
+  }
   function doCommit() {
     if (!_approvedPlan || !_approvedPlan.length) { setStatus("Niets goedgekeurd."); return; }
     var plan = _approvedPlan, i = 0, ok = 0, fails = [];
@@ -2269,7 +2338,7 @@
           fails.push({ label: p.label, error: String(e && e.message || e) });
         })
         // Small delay between slots — sequential PATCH→POST, avoid rate-limiting (no bulk endpoint exists).
-        .then(function () { var done = ok + fails.length; setStatus("Wegschrijven " + done + "/" + plan.length + "…"); updateCommitOverlay(done, plan.length); setTimeout(next, 150); });
+        .then(function () { var done = ok + fails.length; setStatus("Wegschrijven " + done + "/" + plan.length + "…"); updateCommitOverlay(done, plan.length); setTimeout(next, commitDelay()); });
     }
     next();
   }
@@ -2368,6 +2437,40 @@
     setStatus("Context-detectie mislukt — vul gegevens handmatig in.");
     console.error("[QWP] context detection failed. ctx=", ctx);
   }
+  // Cheap logged-in probe. A logged-out Questi answers an API GET with an HTML login redirect
+  // (or 401/403). Only a CLEAR negative → "loggedout"; JSON 200 → "authed"; anything ambiguous
+  // (network hiccup, odd status) → "unknown", so we fall through to the normal boot path and
+  // never block a working session.
+  function authProbe() {
+    return fetch(API_ROOT + "/schools", { credentials: "include", headers: { "Accept": "application/json" } })
+      .then(function (r) {
+        if (r.status === 401 || r.status === 403) return "loggedout";
+        if ((r.headers.get("content-type") || "").indexOf("json") < 0) return "loggedout"; // HTML/login page
+        return "authed";
+      })
+      .catch(function () { return "unknown"; });
+  }
+  // Full-cover "log in first" state (only shown on a clear logged-out probe).
+  function showLoginRequired() {
+    if (elId("qwp-login")) return;
+    var box = h("div", { class: "qwp-login-box" }, [
+      h("div", { class: "qwp-login-t", text: "Log eerst in op Questi" }),
+      h("div", { class: "qwp-login-b", text: "De weekplanner gebruikt je eigen Questi-sessie. Je bent niet (meer) ingelogd. Log in op questi.com en probeer daarna opnieuw." }),
+      h("div", { class: "qwp-login-btns" }, [
+        h("button", { class: "qwp-btn", text: "Open questi.com", onclick: function () { try { window.open("https://www.questi.com", "_blank", "noopener"); } catch (e) {} } }),
+        h("button", { class: "qwp-btn qwp-approve", text: "Ik ben ingelogd — probeer opnieuw", onclick: function () {
+          var o = elId("qwp-login"); if (o) o.remove();
+          setStatus("Opnieuw proberen…");
+          authProbe().then(function (st) {
+            if (st === "loggedout") { showLoginRequired(); return; }
+            return detectContext().then(function () { if (!ctx.schoolId) { showContextError(); return; } return loadEverything(); });
+          }).catch(function (e) { console.error("[QWP] login retry error:", e); setStatus("Laadfout — probeer 'Vernieuwen'."); });
+        } })
+      ])
+    ]);
+    els.page.appendChild(h("div", { class: "qwp-login", id: "qwp-login" }, [box]));
+    setStatus("Niet ingelogd op Questi.");
+  }
   // Non-destructive prompt for the per-user lesfiche tag (grid stays visible).
   function openOwnTagPrompt() {
     if (elId("qwp-modal")) return;
@@ -2419,6 +2522,8 @@
   function quickHealthCheck() {
     var problem = !ctx.ready || ctx.schoolId == null || ctx.groupId == null || ctx.ownDefaultTagId == null || ((groupFor(myId()) || { items: [] }).items.length === 0);
     var b = elId("qwp-debug"); if (b) b.classList.toggle("qwp-alert", !!problem);
+    // A non-technical user never clicks Debug on their own — surface the problem loudly.
+    if (problem) showToast("Sommige gegevens werden niet gevonden — de planner werkt mogelijk niet volledig.", "Diagnose", openDiagnose);
     return problem;
   }
   function retryDetect() {
@@ -2430,6 +2535,7 @@
     var root = buildShell();
     document.body.appendChild(root);
     show();
+    checkForUpdate(); // best-effort GitHub version check → banner if a newer release exists
     // Ctrl/⌘+Z undo — only while the panel is open and not editing text.
     document.addEventListener("keydown", function (e) {
       if (!els.root || !els.root.classList.contains("qwp-show")) return;
@@ -2448,8 +2554,12 @@
       [0, 1, 2].forEach(function (i) { if (state.panels[i]) view.panels[i] = Object.assign(view.panels[i], state.panels[i]); });
       syncWeekSeg(); syncSegs(); applySplit(); wireSplitter();
       setStatus("Questi-context detecteren…");
-      return detectContext();
-    }).then(function () {
+      return authProbe().then(function (st) {
+        if (st === "loggedout") { showLoginRequired(); return "__STOP__"; }
+        return detectContext();
+      });
+    }).then(function (r) {
+      if (r === "__STOP__") return;               // logged-out screen shown; don't continue
       if (!ctx.schoolId) { showContextError(); return; }
       return loadEverything();
     }).catch(function (e) { console.error("[QWP] boot error:", e); setStatus("Laadfout — probeer 'Vernieuwen'."); });

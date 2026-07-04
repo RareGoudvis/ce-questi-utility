@@ -293,6 +293,13 @@ html.qwp-locked, html.qwp-locked body { overflow: hidden !important; }
 .qwp-ctxerr-form .qwp-field { flex:1; }
 .qwp-ctxerr-btns { display:flex; gap:8px; justify-content:flex-end; margin-top:6px; }
 
+/* Full-cover "log in first" state */
+.qwp-login { position:absolute; inset:0; z-index:50; background:var(--canvas); display:flex; align-items:center; justify-content:center; padding:24px; }
+.qwp-login-box { max-width:460px; background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); padding:26px 28px; box-shadow:var(--shadow); text-align:center; }
+.qwp-login-t { font-size:18px; font-weight:700; color:var(--ink); margin-bottom:10px; }
+.qwp-login-b { font-size:13px; color:var(--muted); line-height:1.55; margin-bottom:18px; }
+.qwp-login-btns { display:flex; gap:10px; justify-content:center; flex-wrap:wrap; }
+
 /* Footer */
 .qwp-ftr { display:flex; align-items:center; gap:10px; padding:11px 18px; background:var(--surface); border-top:1px solid var(--line); }
 .qwp-status { font-size:12px; color:var(--muted); }
@@ -365,6 +372,12 @@ html.qwp-locked, html.qwp-locked body { overflow: hidden !important; }
 .qwp-toast-msg { font-weight:500; }
 .qwp-toast-act { background:transparent; border:none; color:#a9bccf; font-weight:700; font-size:13px; cursor:pointer; }
 .qwp-toast-x { background:transparent; border:none; color:#aeb6c2; font-size:16px; line-height:1; cursor:pointer; padding:0 2px; }
+
+/* Update-available banner (top strip, full width, dismissible) */
+.qwp-banner { flex:0 0 auto; display:flex; align-items:center; gap:6px; padding:9px 16px; background:var(--accent-weak); color:var(--ink); border-bottom:1px solid var(--accent); font-size:13px; font-weight:600; }
+.qwp-banner-link { color:var(--accent); font-weight:700; text-decoration:underline; }
+.qwp-banner-x { margin-left:auto; background:transparent; border:none; color:var(--muted); font-size:17px; line-height:1; cursor:pointer; padding:0 2px; }
+.qwp-banner-x:hover { color:var(--ink); }
 
 /* Blocking commit overlay (spinner + progress, no interaction) */
 .qwp-commit-overlay { position:absolute; inset:0; z-index:80; background:rgba(15,23,35,.62); display:flex; align-items:center; justify-content:center; cursor:wait; }

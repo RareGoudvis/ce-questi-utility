@@ -37,8 +37,13 @@ drie browsers bijna identiek.
 5. Klaar — de "Questi Weekplanner" verschijnt in de lijst. Ga naar je Questi-agenda en je
    ziet er een knop verschijnen (zie hieronder).
 
-> **Bijwerken naar een nieuwere versie:** download opnieuw de ZIP, vervang de bestanden in
-> dezelfde map, en klik op de extensiepagina op het **↻ (vernieuwen)**-icoon bij de extensie.
+> **Bijwerken naar een nieuwere versie (makkelijk):** dubbelklik `update.bat` in de map — dat
+> haalt de laatste versie op en vervangt de bestanden. **Herstart daarna Chrome** (of klik op de
+> extensiepagina het **↻ (vernieuwen)**-icoon bij de extensie). Als de extensie zelf meldt dat er
+> een nieuwe versie is, verschijnt bovenaan de planner een balkje met een downloadlink.
+>
+> **Handmatig bijwerken:** download opnieuw de ZIP, vervang de bestanden in dezelfde map, en klik
+> op de extensiepagina op het **↻ (vernieuwen)**-icoon bij de extensie.
 
 ---
 
