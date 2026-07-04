@@ -737,10 +737,6 @@
   // ---------- Shell ----------
   function buildShell() {
     var side = h("div", { class: "qwp-side", id: "qwp-side" }, [
-      h("div", { class: "qwp-side-title" }, [
-        h("span", { class: "qwp-title", text: "Weekplanner" }),
-        h("span", { class: "qwp-sub", id: "qwp-sub", text: "" })
-      ]),
       h("div", { class: "qwp-side-grp" }, [
         h("div", { class: "qwp-side-lbl", text: "Weergave" }),
         h("div", { class: "qwp-seg", id: "qwp-weekseg" }, [
@@ -784,20 +780,16 @@
         h("div", { class: "qwp-side-lbl", text: "Balans deze week" }),
         h("div", { class: "qwp-balance", id: "qwp-balance" })
       ]),
-      h("div", { class: "qwp-side-grp" }, [
-        h("div", { class: "qwp-side-lbl", text: "Info" }),
-        h("div", { class: "qwp-side-note", id: "qwp-side-note", text: "" })
-      ]),
-      // Commit controls pinned to the bottom; status below them above a divider.
+      // Commit controls pinned to the bottom; Info + status just above a divider.
       h("div", { class: "qwp-side-grp qwp-side-bottom" }, [
         h("button", { class: "qwp-side-btn qwp-undo", id: "qwp-undo", onclick: doUndo, title: "Laatste actie ongedaan maken (Ctrl+Z)", text: "Ongedaan maken" }),
         h("button", { class: "qwp-btn qwp-review qwp-side-btn", id: "qwp-review", onclick: openReview, text: "Controleer wijzigingen" }),
         h("button", { class: "qwp-btn qwp-commit qwp-side-btn", id: "qwp-commit", disabled: "true", onclick: doCommit, text: "Wegschrijven (vergrendeld)" }),
         h("button", { class: "qwp-btn qwp-ghost qwp-side-btn", onclick: hide, text: "Sluiten" }),
         h("div", { class: "qwp-side-sep" }),
+        h("div", { class: "qwp-side-note", id: "qwp-side-note", text: "" }),
         h("span", { class: "qwp-status", id: "qwp-status", text: "Laden…" }),
-        h("button", { class: "qwp-side-btn qwp-muted", id: "qwp-debug", onclick: openDiagnose, title: "Zelftest voor ontwikkelaars", text: "Debug" }),
-        h("div", { class: "qwp-credit", text: "Made by Ruben V.H." })
+        h("button", { class: "qwp-side-btn qwp-muted", id: "qwp-debug", onclick: openDiagnose, title: "Zelftest voor ontwikkelaars", text: "Debug" })
       ])
     ]);
 
@@ -834,19 +826,26 @@
       if (isNoSchool(s.dayIdx, s.time)) return;
       if (s.ficheContentId || s.isGym) {
         filled++;
-        var label;
+        var label, color = null;
         if (s.isGym) label = "Gym";
         else {
           // Subject = the top-level tag, from the slot's vak or guessed from the title.
           var top = topTagIdOf(s.vak || guessVakTagFromTitle(s.title));
           label = top != null ? ((tagTitle("self", top) || "").trim() || "Overig") : "Overig";
+          if (top != null) color = tagColor("self", top);
         }
-        counts[label] = (counts[label] || 0) + 1;
+        if (!counts[label]) counts[label] = { n: 0, color: color };
+        counts[label].n++;
       } else if (isTargetable(s)) empty++;
     });
-    var keys = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a] || a.localeCompare(b); });
+    var keys = Object.keys(counts).sort(function (a, b) { return counts[b].n - counts[a].n || a.localeCompare(b); });
     if (!keys.length && !empty) { el.appendChild(h("div", { class: "qwp-balance-empty", text: "Nog niets gepland." })); return; }
-    keys.forEach(function (k) { el.appendChild(h("div", { class: "qwp-balance-row" }, [h("span", { class: "qwp-balance-vak", text: k }), h("span", { class: "qwp-balance-n", text: String(counts[k]) })])); });
+    keys.forEach(function (k) {
+      // Colour the label by the subject's questi tag colour.
+      var vak = h("span", { class: "qwp-balance-vak", text: k });
+      if (counts[k].color) vak.style.color = counts[k].color;
+      el.appendChild(h("div", { class: "qwp-balance-row" }, [vak, h("span", { class: "qwp-balance-n", text: String(counts[k].n) })]));
+    });
     el.appendChild(h("div", { class: "qwp-side-sep" }));
     el.appendChild(h("div", { class: "qwp-balance-tot", text: "Gepland " + filled + " · Leeg " + empty }));
   }
