@@ -1,0 +1,376 @@
+/* Questi Week Planner — planner.css
+ * Light theme only. Everything is namespaced under #qwp-overlay so nothing
+ * leaks into (or inherits from) Questi's own page.
+ *
+ * Layout:  FULLSCREEN overlay
+ *          page = header
+ *                 main = [ sidebar | content( nav + timetable + dual pickers ) ]
+ *                 footer
+ * The timetable is a SINGLE grid; in "2 weken" the two weeks sit SIDE BY SIDE
+ * (time column, then week-1's 5 day columns, then week-2's 5 day columns).
+ * ------------------------------------------------------------------ */
+
+#qwp-overlay, #qwp-overlay * { box-sizing: border-box; }
+
+/* When open, freeze the underlying Questi page from scrolling behind us. */
+html.qwp-locked, html.qwp-locked body { overflow: hidden !important; }
+
+#qwp-overlay {
+  --ink:#1f2733; --muted:#5b6470; --faint:#8b94a0;
+  --line:#e4e8ee; --line-soft:#eef1f5;
+  --surface:#ffffff; --canvas:#ffffff; --raised:#fbfcfe;
+  /* Questi brand navy as the accent (matches the app header) instead of a generic blue. */
+  --accent:#33485d; --accent-weak:#eaeef2; --accent-line:#c2ccd7;
+  --change:#137a3a; --change-weak:#e8f5ec; --change-line:#b4e0c2;
+  --thema:#a86400; --thema-weak:#fbf1df; --thema-line:#ecd3a6;
+  --gym:#51607a; --gym-weak:#eef1f6;
+  --danger:#b3261e;
+  --radius:10px; --radius-sm:8px;
+  --shadow:0 10px 40px rgba(15,23,35,.22);
+  --wksep:#c9d2df;
+  position: fixed; inset: 0; z-index: 2147483000;
+  display: none;
+  font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--ink); -webkit-font-smoothing: antialiased;
+}
+#qwp-overlay.qwp-show { display: block; }
+
+/* Fullscreen page: fills the entire viewport. Accent line spans the whole top. */
+.qwp-page { position: absolute; inset: 0; width: 100vw; height: 100vh; background: var(--canvas); display: flex; flex-direction: column; border-top: 3px solid var(--accent); }
+
+/* Header */
+.qwp-hdr { display: flex; align-items: baseline; gap: 12px; padding: 12px 18px; background: var(--surface); border-bottom: 1px solid var(--line); border-top: 3px solid var(--accent); }
+.qwp-title { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }
+.qwp-sub { font-size: 12px; color: var(--faint); font-weight: 500; }
+.qwp-spacer { flex: 1; }
+
+/* Buttons — text labels only, no icons anywhere. */
+.qwp-btn { background: var(--accent); color:#fff; border:1px solid var(--accent); border-radius: var(--radius-sm); padding:7px 13px; cursor:pointer; font-size:12.5px; font-weight:600; line-height:1; }
+.qwp-btn:hover { background:#29394a; border-color:#29394a; }
+.qwp-btn:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.qwp-btn.qwp-ghost { background: var(--line-soft); color:#33404f; border-color:transparent; }
+.qwp-btn.qwp-ghost:hover { background:#e4e8ef; }
+.qwp-btn.qwp-review { background:#47526a; border-color:#47526a; }
+.qwp-btn.qwp-review:hover { background:#3b4459; }
+.qwp-btn.qwp-commit { background:#d4d8de; color:#7a828c; border-color:#d4d8de; cursor:not-allowed; }
+.qwp-btn.qwp-commit.armed { background:var(--change); border-color:var(--change); color:#fff; cursor:pointer; }
+.qwp-btn.qwp-commit.armed:hover { background:#0f6531; }
+.qwp-btn.qwp-approve { background:var(--change); border-color:var(--change); }
+.qwp-btn.qwp-sm { padding:5px 10px; font-size:11.5px; }
+
+/* Main split */
+.qwp-main { flex:1; display:flex; min-height:0; }
+
+/* Sidebar */
+.qwp-side { width:186px; flex:0 0 186px; background:var(--surface); border-right:1px solid var(--line); padding:14px 13px; display:flex; flex-direction:column; gap:15px; overflow:auto; }
+.qwp-side-title { display:flex; flex-direction:column; gap:2px; padding-bottom:2px; }
+.qwp-side-title .qwp-title { font-size:16px; font-weight:700; letter-spacing:-0.01em; }
+.qwp-side-title .qwp-sub { font-size:11.5px; color:var(--faint); font-weight:500; }
+.qwp-navrow { display:flex; gap:6px; }
+.qwp-navbtn { flex:1; padding:7px 6px; text-align:center; font-weight:700; }
+.qwp-side-grp { display:flex; flex-direction:column; gap:7px; }
+/* Commit controls pinned to the sidebar bottom (footer folded in). */
+.qwp-side-bottom { margin-top:auto; padding-top:12px; border-top:1px solid var(--line); gap:8px; }
+.qwp-side-bottom .qwp-status { font-size:11px; color:var(--muted); line-height:1.35; }
+.qwp-side-btn.qwp-commit { background:#d4d8de; color:#7a828c; border-color:#d4d8de; cursor:not-allowed; text-align:center; }
+.qwp-side-btn.qwp-commit.armed { background:var(--change); border-color:var(--change); color:#fff; cursor:pointer; }
+.qwp-side-btn.qwp-review { background:#47526a; border-color:#47526a; color:#fff; text-align:center; }
+.qwp-side-btn.qwp-review:hover { background:#3b4459; }
+.qwp-side-lbl { font-size:10px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--faint); }
+.qwp-side-btn { text-align:center; background:var(--raised); border:1px solid var(--line); border-radius:var(--radius-sm); padding:9px 11px; font-size:12.5px; font-weight:600; color:var(--ink); cursor:pointer; }
+.qwp-side-btn:hover { border-color:var(--accent-line); background:var(--accent-weak); }
+.qwp-side-btn.qwp-muted { color:var(--faint); background:transparent; border-color:var(--line-soft); font-weight:500; }
+.qwp-side-btn.qwp-muted:hover { color:var(--muted); background:var(--line-soft); border-color:var(--line); }
+/* On-open health check failed → Debug glows red (still clickable, no message). */
+.qwp-side-btn.qwp-alert { color:var(--danger); border-color:var(--danger); font-weight:700; animation:qwp-glow 1.4s ease-in-out infinite; }
+@keyframes qwp-glow { 0%,100% { box-shadow:0 0 0 0 rgba(179,38,30,.45); } 50% { box-shadow:0 0 7px 3px rgba(179,38,30,.35); } }
+.qwp-side-note { font-size:11.5px; color:var(--muted); line-height:1.4; }
+/* Sidebar bottom: divider + status + credit */
+.qwp-side-sep { height:1px; background:var(--line); margin:4px 0 2px; }
+.qwp-credit { font-size:10px; color:var(--faint); text-align:center; margin-top:2px; }
+/* Undo button (sidebar) */
+.qwp-side-btn.qwp-undo { text-align:center; }
+.qwp-side-btn.qwp-disabled { opacity:.45; cursor:default; pointer-events:none; }
+/* Balans (per-vak tally) */
+.qwp-balance { display:flex; flex-direction:column; gap:3px; }
+.qwp-balance-row { display:flex; align-items:center; justify-content:space-between; font-size:11.5px; color:var(--muted); }
+.qwp-balance-vak { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.qwp-balance-n { font-weight:700; color:var(--ink); font-variant-numeric:tabular-nums; margin-left:8px; }
+.qwp-balance-tot { font-size:11px; font-weight:700; color:var(--accent); }
+.qwp-balance-empty { font-size:11px; color:var(--faint); font-style:italic; }
+/* Kopieer vorige week — rows */
+.qwp-copy-row { display:flex; align-items:center; gap:10px; padding:6px 2px; border-bottom:1px solid var(--line-soft); font-size:12.5px; cursor:pointer; }
+.qwp-copy-row.disabled { color:var(--faint); cursor:default; }
+.qwp-copy-row input { width:15px; height:15px; accent-color:var(--accent); flex:0 0 auto; }
+.qwp-copy-fiche { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.qwp-copy-meta { color:var(--muted); font-size:11.5px; white-space:nowrap; }
+.qwp-copy-note { color:var(--faint); font-size:11px; font-style:italic; white-space:nowrap; }
+/* Legend */
+.qwp-legend-row { display:flex; align-items:center; gap:8px; font-size:11px; color:var(--muted); }
+.qwp-legend-sw { width:13px; height:13px; border-radius:3px; flex:0 0 auto; border:1px solid var(--line); }
+.qwp-legend-sw.border { background:var(--surface); border-width:2px; border-left-width:3px; }
+.qwp-seg { display:flex; border:1px solid var(--line); border-radius:var(--radius-sm); overflow:hidden; }
+.qwp-seg button { flex:1; background:var(--surface); border:none; padding:8px 6px; font-size:12px; font-weight:600; color:var(--muted); cursor:pointer; }
+.qwp-seg button + button { border-left:1px solid var(--line); }
+.qwp-seg button.active { background:var(--accent); color:#fff; }
+
+/* Content column */
+.qwp-content { flex:1; display:flex; flex-direction:column; min-width:0; min-height:0; }
+/* Draggable splitter between grid and filter lists */
+.qwp-splitter { flex:0 0 6px; cursor:row-resize; background:var(--line-soft); border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
+.qwp-splitter:hover { background:var(--accent-line); }
+
+/* Global cross-owner search bar (top of the content column) */
+.qwp-gsearch { position:relative; display:flex; align-items:center; gap:8px; padding:8px 16px; background:var(--surface); border-bottom:1px solid var(--line); z-index:26; }
+.qwp-gsearch-inp { flex:1; max-width:440px; border:1px solid var(--line); border-radius:var(--radius-sm); padding:7px 11px; font-size:13px; background:var(--raised); color:var(--ink); }
+.qwp-gsearch-inp:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-weak); }
+.qwp-select.qwp-gsearch-owner { max-width:170px; }
+.qwp-gsearch-hint { font-size:11px; color:var(--faint); }
+.qwp-gsearch-results { position:absolute; top:calc(100% - 1px); left:16px; width:480px; max-width:calc(100vw - 40px); max-height:360px; overflow:auto; background:var(--surface); border:1px solid var(--line); border-radius:0 0 var(--radius-sm) var(--radius-sm); box-shadow:var(--shadow); z-index:27; display:none; }
+.qwp-gsearch-results.open { display:block; }
+.qwp-gsearch-row { display:flex; align-items:center; gap:8px; padding:7px 11px; font-size:12.5px; cursor:grab; border-bottom:1px solid var(--line-soft); }
+.qwp-gsearch-row:last-child { border-bottom:none; }
+.qwp-gsearch-row:hover { background:var(--accent-weak); }
+.qwp-gsearch-t { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.qwp-gsearch-badge { font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:.03em; color:var(--muted); background:var(--line-soft); border-radius:999px; padding:2px 7px; white-space:nowrap; }
+.qwp-gsearch-msg { padding:9px 11px; font-size:12px; color:var(--faint); }
+
+/* Top navigation bar */
+.qwp-nav { display:flex; align-items:center; gap:8px; padding:10px 16px; background:var(--surface); border-bottom:1px solid var(--line); }
+.qwp-range { font-size:13px; font-weight:700; color:var(--ink); font-variant-numeric:tabular-nums; margin-left:6px; }
+
+/* Timetable (top) */
+.qwp-ttwrap { flex:1 1 58%; overflow:auto; padding:14px 16px; }
+/* Fit-to-viewport: columns are minmax(0,1fr) inline, so the grid must NOT force
+ * its intrinsic width — otherwise two weeks overflow horizontally. */
+.qwp-tt { display:grid; gap:6px; width:100%; }
+.qwp-tt-corner { display:flex; align-items:flex-end; justify-content:flex-end; padding:6px 8px; }
+.qwp-tt-corner-lbl { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--faint); }
+.qwp-weekcap-cell { font-size:11px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; color:var(--accent); background:var(--accent-weak); border-radius:var(--radius-sm); padding:6px 10px; display:flex; align-items:center; }
+.qwp-tt-dayhd { display:flex; align-items:center; justify-content:center; text-align:center; padding:6px 8px; background:var(--accent-weak); border-bottom:2px solid var(--accent-line); }
+.qwp-tt-daydate { font-size:11.5px; font-weight:700; color:var(--accent); text-align:center; }
+.qwp-tt-timelbl { display:flex; align-items:flex-start; justify-content:flex-end; padding:8px 8px 0 0; font-size:11px; font-weight:600; color:var(--faint); font-variant-numeric:tabular-nums; }
+.qwp-tt-themalbl { display:flex; align-items:center; justify-content:flex-end; padding-right:8px; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--thema); }
+
+/* Visual gap between the two weeks (side-by-side separator line). */
+.qwp-tt .wk-sep { border-left:2px solid var(--accent-line); padding-left:12px; margin-left:6px; }
+
+/* Theme rows (WO/thema + GD/thema): one full-week cell, short height. */
+.qwp-cell.thema-span { min-height:34px; padding:5px 11px; display:flex; align-items:center; gap:10px; background:var(--thema-weak); border-color:var(--thema-line); }
+.qwp-cell.thema-span .qwp-cell-top { display:none; }
+.qwp-cell.thema-span .qwp-cell-title { margin-top:0; font-size:12px; }
+.qwp-cell.thema-span .qwp-cell-fiche { margin-top:0; }
+.qwp-cell.thema-span.empty { background:transparent; }
+.qwp-cell.thema-span .qwp-cell-empty-hint { font-style:italic; }
+
+/* Pauze / speeltijd band spanning the whole grid width. */
+.qwp-tt-break { grid-column:1 / -1; display:flex; align-items:center; justify-content:center; min-height:16px; }
+.qwp-tt-break span { font-size:9px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:var(--faint); background:var(--canvas); border:1px dashed var(--line); border-radius:999px; padding:2px 14px; }
+
+/* No-school cell (Woensdagnamiddag). */
+.qwp-cell.noschool { background:repeating-linear-gradient(135deg, var(--line-soft) 0 6px, transparent 6px 12px); border-style:dashed; cursor:default; display:flex; align-items:center; justify-content:center; }
+.qwp-cell.noschool:hover { border-color:var(--line); }
+.qwp-cell.noschool .qwp-cell-empty-hint { color:var(--faint); font-style:italic; }
+
+/* Slot cell — every cell (incl. empty) is clickable. Compact: title only. */
+.qwp-cell { background:var(--surface); border:1px solid var(--line); border-radius:var(--radius-sm); padding:5px 9px; min-height:34px; cursor:pointer; transition:border-color .12s, box-shadow .12s, background .12s; }
+.qwp-cell:hover { border-color:var(--accent-line); }
+.qwp-cell.sel { border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-weak); }
+.qwp-cell.drop { border-color:var(--accent); background:var(--accent-weak); }
+/* Mass-add target (click-selected empty slot). */
+.qwp-cell.target { border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-weak); background:var(--accent-weak); }
+/* While dragging a fiche card: pulse every valid empty drop slot. */
+.qwp-dragging .qwp-cell.slot-empty, .qwp-dragging .qwp-cell.empty { border-style:dashed; border-color:var(--accent-line); animation:qwp-pulse 1s ease-in-out infinite; }
+@keyframes qwp-pulse { 0%,100% { background:var(--surface); } 50% { background:var(--accent-weak); } }
+.qwp-dragging .qwp-cell.empty { background:var(--accent-weak); }
+.qwp-cell.empty { background:transparent; border-style:dashed; cursor:pointer; display:flex; align-items:center; justify-content:center; }
+.qwp-cell.empty:hover { border-color:var(--accent-line); background:var(--raised); }
+.qwp-cell.slot-empty { border-style:dashed; position:relative; }
+/* Dekkingsindicator: a small "+" marks a plannable empty lesuur. */
+.qwp-cell.slot-empty::after { content:"+"; position:absolute; top:2px; right:5px; font-size:12px; font-weight:700; color:var(--accent-line); line-height:1; }
+/* Quiet blank cell (no lesson-start here this day) — recedes, not clickable. */
+.qwp-cell.blank { background:transparent; border:1px solid var(--line-soft); cursor:default; }
+.qwp-cell.blank:hover { border-color:var(--line-soft); }
+/* Movable (filled) slot — grab cursor to hint drag-to-move/swap. */
+.qwp-cell.movable { cursor:grab; }
+.qwp-cell.movable:active { cursor:grabbing; }
+/* Drag: slots whose Instellingen vak matches the dragged fiche get a stronger cue. */
+.qwp-dragging .qwp-cell.vak-match { border-style:solid; border-color:var(--accent); background:var(--accent-weak); box-shadow:0 0 0 2px var(--accent-weak); animation:none; }
+.qwp-cell.hasexisting { border-left:3px solid var(--accent); }
+.qwp-cell.dirty { border-color:var(--change-line); background:var(--change-weak); border-left:3px solid var(--change); }
+.qwp-cell.isgym { background:var(--gym-weak); }
+.qwp-cell.isthema { background:var(--thema-weak); border-left:3px solid var(--thema); }
+.qwp-cell-top { display:flex; align-items:center; justify-content:space-between; gap:6px; min-height:14px; }
+.qwp-cell-vak { font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--accent); }
+.qwp-cell-title { font-size:12px; font-weight:600; line-height:1.2; word-break:break-word; margin-top:1px; }
+/* Overview = title only. Hide the 2nd (description) line in the grid. */
+.qwp-cell-fiche { display:none; }
+.qwp-cell.thema-span .qwp-cell-fiche { display:inline; font-size:11px; color:var(--thema); margin-top:0; }
+.qwp-cell-empty-hint { font-size:10.5px; color:var(--faint); }
+.qwp-badge { font-size:9px; font-weight:700; letter-spacing:.03em; padding:2px 6px; border-radius:999px; text-transform:uppercase; white-space:nowrap; }
+.qwp-badge-change { background:var(--change); color:#fff; }
+.qwp-badge-exist { background:var(--accent-weak); color:var(--accent); }
+
+/* Bottom filter panels (1-3 independent panels, side by side) */
+.qwp-pickers { flex:0 0 44%; min-height:220px; display:flex; gap:0; border-top:1px solid var(--line); background:var(--surface); }
+.qwp-picker { --vak-accent:var(--line); flex:1 1 0; min-width:0; display:flex; flex-direction:column; min-height:0; border-left:2px solid var(--wksep); border-top:3px solid var(--vak-accent); }
+.qwp-picker:first-child { border-left:none; }
+.qwp-picker-hd { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid var(--line-soft); background:#f7f9fc; }
+.qwp-vaktoggle { display:flex; gap:4px; flex-wrap:wrap; }
+.qwp-vakbtn { display:inline-flex; align-items:center; gap:5px; border:1px solid var(--line); background:var(--raised); border-radius:999px; padding:3px 9px; font-size:11px; font-weight:600; color:var(--muted); cursor:pointer; }
+.qwp-vakbtn:hover { border-color:var(--accent-line); }
+.qwp-vakbtn.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+.qwp-vakdot { width:9px; height:9px; border-radius:50%; background:var(--line); flex:0 0 auto; }
+.qwp-vakbtn.active .qwp-vakdot { box-shadow:0 0 0 1.5px #fff; }
+.qwp-btn.qwp-sm.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+.qwp-picker-tools { display:flex; align-items:center; gap:6px; margin-left:auto; }
+.qwp-psearch { border:1px solid var(--line); border-radius:var(--radius-sm); padding:5px 8px; font-size:12px; background:var(--surface); color:var(--ink); width:96px; }
+.qwp-psearch:focus { outline:none; border-color:var(--accent); }
+.qwp-select { border:1px solid var(--line); border-radius:var(--radius-sm); padding:5px 8px; font-size:12px; background:var(--surface); color:var(--ink); max-width:130px; }
+.qwp-select.qwp-grade { max-width:120px; }
+.qwp-subcats { display:flex; flex-wrap:wrap; gap:5px; padding:7px 12px 0; max-height:64px; overflow:auto; }
+.qwp-subcats:empty { display:none; }
+.qwp-subchip { border:1px solid var(--line); background:var(--raised); border-radius:999px; padding:3px 9px; font-size:11px; color:var(--muted); cursor:pointer; }
+.qwp-subchip:hover { border-color:var(--accent-line); }
+.qwp-subchip.active { background:var(--accent-weak); border-color:var(--accent-line); color:var(--accent); font-weight:600; }
+/* List view = one clean row per fiche; Card view = wrapping grid. */
+.qwp-picker-list { flex:1; overflow:auto; padding:8px 12px; align-content:start; }
+.qwp-picker-list.list { display:flex; flex-direction:column; gap:2px; }
+/* Card columns come from an inline grid-template (cardCols(): 1 panel→8, 2→3, 3→2). */
+.qwp-picker-list.card { display:grid; gap:6px; }
+.qwp-pfiche { display:flex; align-items:center; gap:8px; cursor:grab; }
+.qwp-picker-list.list .qwp-pfiche { padding:4px 8px; border-bottom:1px solid var(--line-soft); border-radius:0; }
+.qwp-picker-list.list .qwp-pfiche:hover { background:var(--accent-weak); }
+.qwp-picker-list.list .qwp-pfiche.picked { background:var(--accent-weak); }
+.qwp-picker-list.list .qwp-pfiche-t { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.qwp-picker-list.card .qwp-pfiche { padding:7px 10px; border:1px solid var(--line); border-radius:var(--radius-sm); background:var(--raised); align-items:flex-start; }
+.qwp-picker-list.card .qwp-pfiche:hover { border-color:var(--accent-line); background:var(--accent-weak); }
+.qwp-picker-list.card .qwp-pfiche.picked { border-color:var(--accent); background:var(--accent-weak); }
+.qwp-picker-list.card .qwp-pfiche-t { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+.qwp-pfiche input { width:15px; height:15px; accent-color:var(--accent); flex:0 0 auto; }
+.qwp-pfiche-t { flex:1; font-size:12px; line-height:1.3; }
+.qwp-used { font-size:9px; font-weight:700; letter-spacing:.03em; text-transform:uppercase; color:var(--change); background:var(--change-weak); border-radius:999px; padding:2px 6px; white-space:nowrap; }
+.qwp-picker-ft { display:flex; align-items:center; gap:10px; padding:8px 12px; border-top:1px solid var(--line-soft); }
+.qwp-pick-count { font-size:12px; color:var(--muted); }
+.qwp-empty { color:var(--faint); padding:18px 12px; text-align:center; font-size:12.5px; grid-column:1 / -1; }
+
+/* Context-detection error + manual override */
+.qwp-ctxerr { max-width:560px; margin:24px auto; background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); padding:20px 22px; }
+.qwp-ctxerr-t { font-size:15px; font-weight:700; color:var(--danger); margin-bottom:8px; }
+.qwp-ctxerr-b { font-size:12.5px; color:var(--muted); line-height:1.5; margin-bottom:14px; }
+.qwp-ctxerr-form { display:flex; gap:12px; }
+.qwp-ctxerr-form .qwp-field { flex:1; }
+.qwp-ctxerr-btns { display:flex; gap:8px; justify-content:flex-end; margin-top:6px; }
+
+/* Footer */
+.qwp-ftr { display:flex; align-items:center; gap:10px; padding:11px 18px; background:var(--surface); border-top:1px solid var(--line); }
+.qwp-status { font-size:12px; color:var(--muted); }
+
+/* Generic modal (anchored to the fullscreen page) */
+.qwp-modal { position:absolute; inset:0; background:rgba(15,23,35,.42); display:flex; align-items:center; justify-content:center; z-index:30; }
+.qwp-modal-box { background:var(--surface); border-radius:12px; width:660px; max-width:92%; max-height:86vh; display:flex; flex-direction:column; box-shadow:var(--shadow); }
+.qwp-modal-box.wide { width:900px; }
+.qwp-modal-hd { font-weight:700; font-size:14px; padding:15px 18px; border-bottom:1px solid var(--line-soft); }
+.qwp-modal-body { overflow:auto; padding:14px 18px; }
+.qwp-modal-ft { display:flex; justify-content:flex-end; gap:8px; padding:13px 18px; border-top:1px solid var(--line-soft); }
+.qwp-note { font-size:11.5px; color:var(--muted); margin:0 0 10px; }
+
+/* Slot popup */
+.qwp-field { margin-bottom:12px; }
+.qwp-field label { display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--faint); margin-bottom:5px; }
+.qwp-input { width:100%; background:var(--raised); border:1px solid var(--line); border-radius:var(--radius-sm); padding:8px 11px; font-size:13px; color:var(--ink); }
+.qwp-input:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-weak); }
+.qwp-check { display:flex; align-items:center; gap:8px; font-size:13px; }
+.qwp-check input { width:16px; height:16px; accent-color:var(--accent); }
+.qwp-results { max-height:240px; overflow:auto; border:1px solid var(--line); border-radius:var(--radius-sm); }
+.qwp-result { padding:7px 10px; font-size:12.5px; cursor:pointer; border-bottom:1px solid var(--line-soft); display:flex; align-items:center; gap:8px; }
+.qwp-result:last-child { border-bottom:none; }
+.qwp-result:hover { background:var(--accent-weak); }
+.qwp-result-t { flex:1; }
+
+/* Instellingen grid — larger modal so the slot→vak matrix is comfortable. */
+.qwp-modal-box.qwp-inst-modal { width:1040px; }
+.qwp-inst-noschool { display:flex; align-items:center; justify-content:center; color:var(--faint); font-size:12px; background:var(--line-soft); border-radius:6px; }
+.qwp-inst { display:grid; grid-template-columns:84px repeat(5, 1fr); gap:8px; min-width:820px; }
+.qwp-inst-hd { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); text-align:center; padding:6px; }
+.qwp-inst-time { display:flex; align-items:center; justify-content:flex-end; padding-right:10px; font-size:12px; font-weight:600; color:var(--faint); }
+.qwp-inst-cell select { width:100%; border:1px solid var(--line); border-radius:6px; padding:8px 6px; font-size:12.5px; background:var(--surface); }
+
+/* Mass-add — bigger modal, aligned columns (grip · dot · fiche · arrow · select · x) */
+.qwp-modal-box.qwp-ma-modal { width:960px; max-height:88vh; }
+.qwp-ma-modal .qwp-modal-body { padding-bottom:4px; }
+.qwp-ma-modal .qwp-modal-ft { position:sticky; bottom:0; background:var(--surface); }
+.qwp-ma-row { display:grid; grid-template-columns:12px 1fr auto minmax(300px,380px) 22px auto; align-items:center; gap:10px; padding:7px 0; border-bottom:1px solid var(--line-soft); }
+.qwp-ma-row.dragging { opacity:.5; }
+.qwp-ma-row.missing { background:#fdf1f1; }
+.qwp-ma-grip { cursor:grab; color:var(--faint); font-size:13px; letter-spacing:-2px; user-select:none; text-align:center; }
+.qwp-ma-dot { width:10px; height:10px; border-radius:50%; background:var(--line); display:inline-block; }
+.qwp-ma-fiche { font-size:12.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.qwp-ma-arrow { color:var(--faint); font-size:11px; }
+.qwp-ma-slot { width:100%; min-width:300px; }
+.qwp-ma-slot.dupe { border-color:var(--danger); box-shadow:0 0 0 2px #f6d5d3; }
+.qwp-ma-x { background:transparent; border:1px solid var(--line); color:var(--danger); font-size:11.5px; font-weight:600; cursor:pointer; padding:5px 9px; border-radius:6px; white-space:nowrap; }
+.qwp-ma-x:hover { background:#fdf1f1; border-color:#e6b4b0; }
+.qwp-ma-warn { color:var(--danger); font-size:12px; margin:8px 0 0; font-weight:600; min-height:14px; }
+.qwp-btn.qwp-disabled, .qwp-btn:disabled { opacity:.5; cursor:not-allowed; }
+
+/* Diagnose / Zelftest */
+.qwp-modal-box.qwp-diag-modal { width:820px; }
+.qwp-diag-list { display:flex; flex-direction:column; gap:0; max-height:60vh; overflow:auto; border:1px solid var(--line); border-radius:var(--radius-sm); }
+.qwp-diag-row { padding:9px 12px; border-bottom:1px solid var(--line-soft); }
+.qwp-diag-row:last-child { border-bottom:none; }
+.qwp-diag-row-hd { display:flex; align-items:center; gap:9px; }
+.qwp-diag-name { font-size:12.5px; font-weight:600; color:var(--ink); }
+.qwp-diag-detail { font-size:11.5px; color:var(--muted); margin-top:3px; margin-left:52px; }
+.qwp-diag-next { font-size:11.5px; color:var(--danger); margin-top:2px; margin-left:52px; font-weight:600; }
+.qwp-diag-pill { flex:0 0 auto; width:44px; text-align:center; font-size:9.5px; font-weight:800; letter-spacing:.04em; padding:3px 0; border-radius:999px; color:#fff; }
+.qwp-diag-pill.ok { background:var(--change); }
+.qwp-diag-pill.warn { background:#b7791f; }
+.qwp-diag-pill.fail { background:var(--danger); }
+.qwp-diag-pill.skip { background:#9aa3af; }
+
+/* Toast (bottom, undo) */
+.qwp-toast { position:absolute; left:50%; bottom:22px; transform:translateX(-50%); z-index:60; display:flex; align-items:center; gap:14px; background:#1f2733; color:#fff; border-radius:var(--radius); padding:11px 14px 11px 18px; box-shadow:var(--shadow); font-size:13px; }
+.qwp-toast-msg { font-weight:500; }
+.qwp-toast-act { background:transparent; border:none; color:#a9bccf; font-weight:700; font-size:13px; cursor:pointer; }
+.qwp-toast-x { background:transparent; border:none; color:#aeb6c2; font-size:16px; line-height:1; cursor:pointer; padding:0 2px; }
+
+/* Blocking commit overlay (spinner + progress, no interaction) */
+.qwp-commit-overlay { position:absolute; inset:0; z-index:80; background:rgba(15,23,35,.62); display:flex; align-items:center; justify-content:center; cursor:wait; }
+.qwp-commit-card { background:var(--surface); border-radius:14px; box-shadow:var(--shadow); padding:28px 34px; width:420px; max-width:88%; display:flex; flex-direction:column; align-items:center; gap:16px; text-align:center; }
+.qwp-spinner { width:44px; height:44px; border-radius:50%; border:4px solid var(--accent-weak); border-top-color:var(--accent); animation:qwp-spin .8s linear infinite; }
+@keyframes qwp-spin { to { transform:rotate(360deg); } }
+.qwp-commit-msg { font-size:14px; font-weight:600; color:var(--ink); line-height:1.4; }
+.qwp-commit-msg.err { color:var(--danger); }
+.qwp-progress { width:100%; height:10px; background:var(--line-soft); border-radius:999px; overflow:hidden; }
+.qwp-progress-fill { height:100%; width:0; background:var(--accent); border-radius:999px; transition:width .2s ease; }
+.qwp-commit-count { font-size:12px; font-weight:700; color:var(--muted); font-variant-numeric:tabular-nums; }
+
+/* Colleague popover */
+.qwp-pop { position:absolute; top:120px; left:200px; width:300px; max-height:70vh; background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); display:flex; flex-direction:column; z-index:40; }
+.qwp-pop-hd { font-weight:700; font-size:13px; padding:11px 13px; border-bottom:1px solid var(--line-soft); }
+.qwp-pop-search { margin:9px 12px; padding:7px 10px; border:1px solid var(--line); border-radius:var(--radius-sm); font-size:13px; }
+.qwp-pop-list { overflow:auto; padding:2px 12px; flex:1; }
+.qwp-pop-row { display:flex; align-items:center; gap:9px; padding:6px 2px; cursor:pointer; font-size:13px; }
+.qwp-pop-row input { width:15px; height:15px; accent-color:var(--accent); }
+.qwp-pop-ft { display:flex; gap:8px; padding:11px 12px; border-top:1px solid var(--line-soft); }
+
+/* Review — big dual full-grid diff (OLD on top, NEW below) */
+.qwp-modal-box.qwp-review-modal { width:98vw; max-width:none; max-height:94vh; }
+.qwp-rv-body { padding:14px 18px; }
+.qwp-rv-section { margin-bottom:18px; }
+.qwp-rv-caption { font-size:11px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin:0 0 8px; }
+.qwp-rv-tt { display:grid; gap:5px; width:100%; }
+.qwp-rv-cell { cursor:default; min-height:40px; }
+.qwp-rv-cell:hover { border-color:var(--line); }
+.qwp-rv-cellbody { display:flex; flex-direction:column; gap:2px; }
+.qwp-rv-fiche { display:block !important; font-size:10.5px; color:var(--muted); line-height:1.25; margin-top:2px; }
+/* Diff colors for the NEW grid (precedence handled in JS). */
+.qwp-rv-cell.rv-old { background:var(--surface); }
+.qwp-rv-cell.rv-same { background:var(--surface); }
+.qwp-rv-cell.rv-changed { background:var(--change-weak); border-color:var(--change-line); border-left:3px solid var(--change); }
+.qwp-rv-cell.rv-empty { background:#fdf3e2; border-color:var(--thema-line); border-left:3px solid #d98a00; }
+.qwp-rv-cell.rv-empty .qwp-cell-title { color:#8a5800; }
+.qwp-rv-cell.rv-alert { background:#fdecea; border-color:#e6b4b0; border-left:3px solid var(--danger); }
+.qwp-rv-cell.rv-alert .qwp-cell-title { color:var(--danger); }
+.qwp-rv-cell.noschool { background:repeating-linear-gradient(135deg, var(--line-soft) 0 6px, transparent 6px 12px); }

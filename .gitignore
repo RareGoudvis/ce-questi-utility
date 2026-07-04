@@ -1,0 +1,9 @@
+# Internal working files — NOT part of the shipped addon
+.claude/
+reference/
+brief.md
+featues.md
+planned.md
+plannedfeature.md
+image.png
+*.log

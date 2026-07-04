@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "Questi Week Planner",
+  "version": "0.2.0",
+  "description": "Plan a full week (or two weeks side by side) of lessons fast, then review before committing.",
+  "permissions": ["storage", "activeTab", "scripting"],
+  "host_permissions": ["*://www.questi.com/*"],
+  "background": { "service_worker": "background.js" },
+  "action": {
+    "default_title": "Questi Week Planner (Alt+P)",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "commands": {
+    "toggle-planner": {
+      "suggested_key": { "default": "Alt+P" },
+      "description": "Toggle the Questi Week Planner"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://www.questi.com/*"],
+      "js": ["planner.js", "content.js"],
+      "css": ["planner.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
