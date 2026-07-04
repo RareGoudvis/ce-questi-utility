@@ -54,25 +54,46 @@
     return null;
   }
   // Styled to match Questi's light-gray toolbar chips (like the "Week" / "125%" chips):
-  // rounded pill, dark text, a small calendar icon. Self-contained inline SVG + styles.
-  function makeLauncher(floating) {
+  // rounded pill, dark text, a small icon. Self-contained inline SVG + styles.
+  var CAL_ICON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>';
+  var DOC_ICON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="8" y1="13" x2="16" y2="13"></line><line x1="8" y1="17" x2="16" y2="17"></line></svg>';
+  function makeChip(opts, floating) {
     var b = document.createElement("button");
-    b.setAttribute("data-qwp-launcher", "1");
+    b.setAttribute(opts.attr, "1");
     b.type = "button";
-    b.title = "Questi Weekplanner (Alt+P)";
-    b.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg><span>Weekplanner</span>';
-    b.style.cssText = "display:inline-flex;align-items:center;gap:7px;cursor:pointer;height:32px;padding:0 14px;margin:0 4px;border:none;border-radius:16px;background:#e4e7ea;color:#37474f;font:500 13px/1 Roboto,'Segoe UI',-apple-system,Arial,sans-serif;vertical-align:middle;white-space:nowrap;";
-    if (floating) b.style.cssText += "position:fixed;top:56px;right:16px;z-index:2147482000;box-shadow:0 1px 4px rgba(0,0,0,.2);";
-    b.addEventListener("mouseenter", function () { b.style.background = "#d6dade"; });
-    b.addEventListener("mouseleave", function () { b.style.background = "#e4e7ea"; });
-    b.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); toggle(); });
+    b.title = opts.title;
+    b.innerHTML = opts.icon + "<span>" + opts.label + "</span>";
+    // Match Questi's own toolbar chips: urw-din font, slate ink (#304651), light-grey pill.
+    b.style.cssText = "display:inline-flex;align-items:center;gap:7px;cursor:pointer;height:32px;padding:0 14px;margin:0 4px;border:none;border-radius:16px;background:#eceef0;color:#304651;font:600 13px/1 urw-din,q-urw-din,helvetica,'Segoe UI',Arial,sans-serif;vertical-align:middle;white-space:nowrap;";
+    if (floating) b.style.cssText += "position:fixed;top:56px;right:" + (opts.floatRight || 16) + "px;z-index:2147482000;box-shadow:0 1px 4px rgba(0,0,0,.2);";
+    b.addEventListener("mouseenter", function () { b.style.background = "#dfe2e5"; });
+    b.addEventListener("mouseleave", function () { b.style.background = "#eceef0"; });
+    b.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); opts.onClick(); });
     return b;
   }
+  var PLANNER_CHIP = { attr: "data-qwp-launcher", title: "Questi Weekplanner (Alt+P)", label: "Weekplanner", icon: CAL_ICON, floatRight: 16, onClick: toggle };
+  var LESSONS_CHIP = { attr: "data-qwl-launcher", title: "Lesfiches beheren", label: "Lesfiches", icon: DOC_ICON, floatRight: 158, onClick: function () { if (typeof window.__QWP_OPEN_LESSONS === "function") window.__QWP_OPEN_LESSONS(); } };
+  // The launcher belongs only on the calendar view. Questi is an SPA, so the URL can
+  // change without a reload — gate on the current path and remove the button elsewhere.
+  function onCalendar() { return (location.pathname || "").indexOf("/calendar") !== -1; }
+  function haveChips() { return document.querySelector("[data-qwp-launcher]") && document.querySelector("[data-qwl-launcher]"); }
+  function removeLauncher() {
+    var a = document.querySelector("[data-qwp-launcher]"); if (a) a.remove();
+    var b = document.querySelector("[data-qwl-launcher]"); if (b) b.remove();
+  }
   function ensureLauncher() {
-    if (document.querySelector("[data-qwp-launcher]")) return; // idempotent
+    if (!onCalendar()) { removeLauncher(); return; }   // off the calendar → no buttons
+    if (haveChips()) return;                            // idempotent (both present)
+    removeLauncher();                                   // clear a partial insert, re-add as a pair
     var anchor = findToolbarAnchor();
-    if (anchor && anchor.parentNode) { anchor.parentNode.insertBefore(makeLauncher(false), anchor.nextSibling); return; }
-    if (document.body) document.body.appendChild(makeLauncher(true)); // fallback
+    if (anchor && anchor.parentNode) {
+      // Insert Weekplanner right after the anchor, then Lesfiches right after that.
+      var planner = makeChip(PLANNER_CHIP, false);
+      anchor.parentNode.insertBefore(planner, anchor.nextSibling);
+      anchor.parentNode.insertBefore(makeChip(LESSONS_CHIP, false), planner.nextSibling);
+      return;
+    }
+    if (document.body) { document.body.appendChild(makeChip(PLANNER_CHIP, true)); document.body.appendChild(makeChip(LESSONS_CHIP, true)); } // fallback
   }
   var _luPending = false;
   function scheduleLauncher() {
@@ -81,7 +102,12 @@
   }
   try {
     scheduleLauncher();
-    var mo = new MutationObserver(function () { if (!document.querySelector("[data-qwp-launcher]")) scheduleLauncher(); });
+    // Re-evaluate on any DOM change: adds the chips when the calendar renders, removes
+    // them after an SPA navigation to a non-calendar page.
+    var mo = new MutationObserver(function () {
+      if (!onCalendar()) { removeLauncher(); return; }
+      if (!haveChips()) scheduleLauncher();
+    });
     mo.observe(document.documentElement, { childList: true, subtree: true });
   } catch (e) { /* no-op */ }
 })();

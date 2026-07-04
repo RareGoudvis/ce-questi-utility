@@ -360,6 +360,10 @@
 
   // ---------- API ----------
   function jget(url) { return fetch(url, { credentials: "include", headers: { "Accept": "application/json" } }).then(function (r) { return r.json(); }); }
+  // Questi validates a double-submit CSRF token on writes: the XSRF-TOKEN cookie value
+  // must be echoed in the x-xsrf-token header (POST/PATCH/DELETE). GET needs neither.
+  function xsrfToken() { var m = /(?:^|;\s*)XSRF-TOKEN=([^;]+)/.exec(document.cookie || ""); return m ? decodeURIComponent(m[1]) : ""; }
+  function writeHeaders() { var hd = { "Content-Type": "application/json", "Accept": "application/json" }; var t = xsrfToken(); if (t) hd["x-xsrf-token"] = t; return hd; }
   function qs(obj) {
     var p = [];
     Object.keys(obj).forEach(function (k) {
@@ -395,7 +399,29 @@
     if (total == null) total = items.length;
     return { items: items, total: total };
   }
+  // ---------- Methode-fiches (vendor libraries, read-only) ----------
+  // A methode is loaded as a pseudo-colleague with id "method:<KEY>" so it flows through
+  // the same owner → panel → search plumbing. Its fiches come from a DIFFERENT endpoint
+  // (/methods/{key}/lessons) and carry no tags, so we route them before the tag logic.
+  var METHOD_PREFIX = "method:";
+  function isMethodOwner(ownerId) { return typeof ownerId === "string" && ownerId.indexOf(METHOD_PREFIX) === 0; }
+  function methodKeyOf(ownerId) { return String(ownerId).slice(METHOD_PREFIX.length); }
+  function methodEntry(ownerId) { return state.colleagues.filter(function (c) { return String(c.id) === String(ownerId); })[0] || null; }
+  function fetchMethods() { return jget(API + "/manage/methods/" + ctx.schoolId).then(function (j) { return (j && j.result) || []; }).catch(function () { return []; }); }
+  // Method endpoint returns the full list in one shot (no server paging) → only the
+  // offset-0 call fetches; later "pages" resolve empty so the paging loops just no-op.
+  function fetchMethodFiches(ownerId, offset) {
+    if (offset && offset > 0) return Promise.resolve({ items: [], total: 0 });
+    var c = methodEntry(ownerId), key = methodKeyOf(ownerId);
+    var url = API + "/methods/" + encodeURIComponent(key) + "/lessons?" + qs({ is_cluster: (c && c.isCluster) ? true : false, schoolId: ctx.schoolId });
+    return jget(url).then(function (j) {
+      var items = ((j && j.result) || []).map(function (f) { f.__method = true; f.__methodOwner = ownerId; view.methodFicheIds[String(f.id)] = true; return f; });
+      return { items: items, total: items.length };
+    }).catch(function (err) { console.error("[QWP] /methods lessons failed:", err); return { items: [], total: 0 }; });
+  }
+
   function fetchFiches(ownerId, offset, num) {
+    if (isMethodOwner(ownerId)) return fetchMethodFiches(ownerId, offset);
     var own = isOwnSource(ownerId);
     var params = { schoolId: ctx.schoolId, sorting: "new_items", status: "active", num: num || 100, offset: offset || 0 };
     if (own) {
@@ -429,6 +455,7 @@
     return String(tagId) === String(ALL_FICHES_TAG) || String(tagId) === String(ctx.ownDefaultTagId);
   }
   function fetchFichesByTag(ownerId, tagId, offset, num) {
+    if (isMethodOwner(ownerId)) return fetchMethodFiches(ownerId, offset); // methods carry no tags
     var own = isOwnSource(ownerId);
     var params = { schoolId: ctx.schoolId, sorting: "new_items", status: "active", num: num || 100, offset: offset || 0 };
     if (!own) params.shared_userId = ownerId;
@@ -506,7 +533,7 @@
     var q = { schoolId: ctx.schoolId, schoolyear: ctx.schoolyear, apply_to_next_items: false };
     if (range && range.start && range.end) { q.range_startdate = range.start; q.range_enddate = range.end; }
     return fetch(API + "/items/" + id + "?" + qs(q),
-      { method: "PATCH", credentials: "include", headers: { "Content-Type": "application/json", "Accept": "application/json" }, body: JSON.stringify(body) }).then(function (r) { return resolveWrite("PATCH item", id, r, body); });
+      { method: "PATCH", credentials: "include", headers: writeHeaders(), body: JSON.stringify(body) }).then(function (r) { return resolveWrite("PATCH item", id, r, body); });
   }
   // PATCH item.groups are OBJECTS [{groupId,schoolId}]; the attachment POST wants RAW ids
   // ([326]). Both tolerate a read shape that uses `id` instead of `groupId`.
@@ -527,7 +554,16 @@
   function postAttachment(id, lessonContentId, groups) {
     var payload = { attachments: [{ schoolId: ctx.schoolId, visible_parents: false, visible_students: false, students: [], groups: groupIds(groups), id: lessonContentId, typeId: 1 }] };
     return fetch(API + "/items/" + id + "/attachments?" + qs({ schoolId: ctx.schoolId, schoolyear: ctx.schoolyear }),
-      { method: "POST", credentials: "include", headers: { "Content-Type": "application/json", "Accept": "application/json" }, body: JSON.stringify(payload) }).then(function (r) { return resolveWrite("POST attachment", id, r, payload); });
+      { method: "POST", credentials: "include", headers: writeHeaders(), body: JSON.stringify(payload) }).then(function (r) { return resolveWrite("POST attachment", id, r, payload); });
+  }
+  // Methode-fiches are vendor content and are NOT attachable via the normal endpoint
+  // (that 1235s "no access to lesson"). Questi links them through a dedicated route:
+  // POST /items/{id}/attachments/methodlesson — same body but NO typeId. `id` = the
+  // methode-fiche id (from /methods/{key}/lessons). Response carries the decorated title.
+  function postMethodAttachment(id, lessonId, groups) {
+    var payload = { schoolId: ctx.schoolId, visible_parents: false, visible_students: false, students: [], groups: groupIds(groups), id: lessonId };
+    return fetch(API + "/items/" + id + "/attachments/methodlesson?" + qs({ schoolId: ctx.schoolId, schoolyear: ctx.schoolyear }),
+      { method: "POST", credentials: "include", headers: writeHeaders(), body: JSON.stringify(payload) }).then(function (r) { return resolveWrite("POST methodlesson", id, r, payload); });
   }
 
   // ---------- Domain helpers ----------
@@ -697,7 +733,7 @@
         old: { title: s.origTitle, desc: s.origDescription, fiche: s.origFicheTitle || "(geen)" },
         neu: { title: s.title, desc: toHtmlDesc(nd), fiche: (s.isGym ? "(geen — gym)" : (s.ficheTitle || "(geen)")) },
         patchBody: body, range: range,
-        fiche: (!s.isGym && s.ficheContentId) ? { contentId: s.ficheContentId, groups: grps } : null
+        fiche: (!s.isGym && s.ficheContentId) ? { contentId: s.ficheContentId, groups: grps, isMethod: !!s.ficheIsMethod } : null
       };
     });
   }
@@ -714,6 +750,7 @@
     slots: [], timeRows: [], rowMeta: {}, presence: {}, ficheGroups: [], tags: [], ownTags: [], people: [],
     ownTopTags: [], ficheCache: {}, targetSlots: [], vakTagMap: {},
     selectedSlotId: null, undoStack: [], dragVakTag: null, allByOwner: {},
+    methodFicheIds: {}, // ids seen from any /methods/{key}/lessons fetch → attach via methodlesson
     panels: [mkViewPanel(), mkViewPanel(), mkViewPanel()]
   };
 
@@ -732,43 +769,11 @@
   function elId(id) { return document.getElementById(id); }
   function setStatus(t) { var s = elId("qwp-status"); if (s) s.textContent = t; }
   function groupFor(ownerId) { return view.ficheGroups.filter(function (g) { return String(g.ownerId) === String(ownerId); })[0]; }
-  function ownerName(id) { if (String(id) === String(myId())) return "Ik"; var c = state.colleagues.filter(function (x) { return x.id === id; })[0]; return c ? c.name : ("#" + id); }
+  function ownerName(id) { if (String(id) === String(myId())) return "Ik"; var c = state.colleagues.filter(function (x) { return String(x.id) === String(id); })[0]; if (c && c.isMethod) return "Methode: " + c.name; return c ? c.name : ("#" + id); }
 
   // ---------- Shell ----------
   function buildShell() {
     var side = h("div", { class: "qwp-side", id: "qwp-side" }, [
-      h("div", { class: "qwp-side-grp" }, [
-        h("div", { class: "qwp-side-lbl", text: "Weergave" }),
-        h("div", { class: "qwp-seg", id: "qwp-weekseg" }, [
-          h("button", { "data-w": "1", onclick: function () { setWeeks(1); }, text: "1 week" }),
-          h("button", { "data-w": "2", onclick: function () { setWeeks(2); }, text: "2 weken" })
-        ]),
-        h("div", { class: "qwp-navrow" }, [
-          h("button", { class: "qwp-btn qwp-ghost qwp-navbtn", onclick: prevWeek, title: "Vorige week", text: "←" }),
-          h("button", { class: "qwp-btn qwp-ghost qwp-navbtn", onclick: thisWeek, title: "Deze week", text: "Deze week" }),
-          h("button", { class: "qwp-btn qwp-ghost qwp-navbtn", onclick: nextWeek, title: "Volgende week", text: "→" })
-        ]),
-        h("button", { class: "qwp-side-btn", onclick: reloadAndRender, text: "Vernieuwen" })
-      ]),
-      h("div", { class: "qwp-side-grp" }, [
-        h("div", { class: "qwp-side-lbl", text: "Filterpanelen" }),
-        h("div", { class: "qwp-seg", id: "qwp-panelseg" }, [
-          h("button", { "data-p": "1", onclick: function () { setPanelCount(1); }, text: "1" }),
-          h("button", { "data-p": "2", onclick: function () { setPanelCount(2); }, text: "2" }),
-          h("button", { "data-p": "3", onclick: function () { setPanelCount(3); }, text: "3" })
-        ]),
-        h("div", { class: "qwp-seg", id: "qwp-viewseg" }, [
-          h("button", { "data-v": "list", onclick: function () { setPickerView("list"); }, text: "Lijst" }),
-          h("button", { "data-v": "card", onclick: function () { setPickerView("card"); }, text: "Kaart" })
-        ])
-      ]),
-      h("div", { class: "qwp-side-grp" }, [
-        h("div", { class: "qwp-side-lbl", text: "Opties" }),
-        h("button", { class: "qwp-side-btn", onclick: openInstellingen, text: "Instellingen" }),
-        h("button", { class: "qwp-side-btn", onclick: openCopyPrevWeek, text: "Kopieer vorige week" }),
-        h("button", { class: "qwp-side-btn", onclick: openColleaguePopover, text: "Collega's laden" }),
-        h("button", { class: "qwp-side-btn", onclick: loadAllFiches, text: "Alle lesfiches laden" })
-      ]),
       h("div", { class: "qwp-side-grp" }, [
         h("div", { class: "qwp-side-lbl", text: "Legende" }),
         legendRow("var(--accent)", "border", "blauwe rand = fiche gekoppeld"),
@@ -780,21 +785,57 @@
         h("div", { class: "qwp-side-lbl", text: "Balans deze week" }),
         h("div", { class: "qwp-balance", id: "qwp-balance" })
       ]),
-      // Commit controls pinned to the bottom; Info + status just above a divider.
+      h("div", { class: "qwp-side-grp" }, [
+        h("div", { class: "qwp-side-lbl", text: "Filterpanelen" }),
+        h("div", { class: "qwp-seg", id: "qwp-panelseg" }, [
+          h("button", { "data-p": "1", onclick: function () { setPanelCount(1); }, text: "1" }),
+          h("button", { "data-p": "2", onclick: function () { setPanelCount(2); }, text: "2" }),
+          h("button", { "data-p": "3", onclick: function () { setPanelCount(3); }, text: "3" })
+        ]),
+        h("div", { class: "qwp-seg", id: "qwp-viewseg" }, [
+          h("button", { "data-v": "list", onclick: function () { setPickerView("list"); }, text: "Lijst" }),
+          h("button", { "data-v": "card", onclick: function () { setPickerView("card"); }, text: "Kaart" })
+        ]),
+        h("button", { class: "qwp-side-btn", onclick: reloadAndRender, text: "Vernieuwen" })
+      ]),
+      h("div", { class: "qwp-side-grp" }, [
+        h("div", { class: "qwp-side-lbl", text: "Opties" }),
+        h("button", { class: "qwp-side-btn", onclick: openInstellingen, text: "Instellingen" }),
+        h("button", { class: "qwp-side-btn", onclick: openCopyPrevWeek, text: "Kopieer vorige week" })
+      ]),
+      h("div", { class: "qwp-side-grp" }, [
+        h("div", { class: "qwp-side-lbl", text: "Lesfiches laden" }),
+        h("button", { class: "qwp-side-btn", onclick: loadAllFiches, text: "Eigen lesfiches" }),
+        h("button", { class: "qwp-side-btn", onclick: openColleaguePopover, text: "Collega's" }),
+        h("button", { class: "qwp-side-btn", onclick: openMethodesPopover, text: "Methodes" })
+      ]),
+      // Bottom: status ABOVE the action buttons.
       h("div", { class: "qwp-side-grp qwp-side-bottom" }, [
-        h("button", { class: "qwp-side-btn qwp-undo", id: "qwp-undo", onclick: doUndo, title: "Laatste actie ongedaan maken (Ctrl+Z)", text: "Ongedaan maken" }),
-        h("button", { class: "qwp-btn qwp-review qwp-side-btn", id: "qwp-review", onclick: openReview, text: "Controleer wijzigingen" }),
-        h("button", { class: "qwp-btn qwp-commit qwp-side-btn", id: "qwp-commit", disabled: "true", onclick: doCommit, text: "Wegschrijven (vergrendeld)" }),
-        h("button", { class: "qwp-btn qwp-ghost qwp-side-btn", onclick: hide, text: "Sluiten" }),
-        h("div", { class: "qwp-side-sep" }),
         h("div", { class: "qwp-side-note", id: "qwp-side-note", text: "" }),
         h("span", { class: "qwp-status", id: "qwp-status", text: "Laden…" }),
+        h("div", { class: "qwp-side-sep" }),
+        h("button", { class: "qwp-side-btn qwp-undo", id: "qwp-undo", onclick: doUndo, title: "Laatste actie ongedaan maken (Ctrl+Z)", text: "Ongedaan maken" }),
+        h("button", { class: "qwp-btn qwp-review qwp-side-btn", id: "qwp-review", onclick: openReview, text: "Controleer & wegschrijven" }),
+        // Hidden arming target kept for doCommit's lock/unlock bookkeeping.
+        h("button", { class: "qwp-btn qwp-commit qwp-side-btn", id: "qwp-commit", disabled: "true", onclick: doCommit, text: "Wegschrijven", style: "display:none" }),
         h("button", { class: "qwp-side-btn qwp-muted", id: "qwp-debug", onclick: openDiagnose, title: "Zelftest voor ontwikkelaars", text: "Debug" })
       ])
     ]);
 
     var content = h("div", { class: "qwp-content" }, [
-      buildGlobalSearch(),
+      h("div", { class: "qwp-topbar" }, [
+        h("div", { class: "qwp-seg qwp-topseg", id: "qwp-weekseg" }, [
+          h("button", { "data-w": "1", onclick: function () { setWeeks(1); }, text: "1 week" }),
+          h("button", { "data-w": "2", onclick: function () { setWeeks(2); }, text: "2 weken" })
+        ]),
+        h("div", { class: "qwp-navrow" }, [
+          h("button", { class: "qwp-btn qwp-ghost qwp-navbtn", onclick: prevWeek, title: "Vorige week", text: "←" }),
+          h("button", { class: "qwp-btn qwp-ghost qwp-navbtn", onclick: thisWeek, title: "Deze week", text: "Deze week" }),
+          h("button", { class: "qwp-btn qwp-ghost qwp-navbtn", onclick: nextWeek, title: "Volgende week", text: "→" })
+        ]),
+        buildGlobalSearch(),
+        h("button", { class: "qwp-topx", onclick: hide, title: "Sluiten", text: "✕" })
+      ]),
       h("div", { class: "qwp-ttwrap", id: "qwp-ttwrap" }),
       h("div", { class: "qwp-splitter", id: "qwp-splitter", title: "Sleep om te herschalen" }),
       h("div", { class: "qwp-pickers", id: "qwp-pickers" }, [buildPicker(0), buildPicker(1), buildPicker(2)])
@@ -1114,7 +1155,7 @@
             var src = slotById(dd.itemId); if (!src || src === s) return;
             pushUndo("lesuur verplaatsen"); moveOrSwap(src, s);
           } else {
-            pushUndo("fiche slepen"); assignFiche(s, { id: dd.id, subject: dd.subject || dd.title }); if (dd.tagId != null) s.vak = dd.tagId;
+            pushUndo("fiche slepen"); assignFiche(s, { id: dd.id, subject: dd.subject || dd.title, isMethod: dd.isMethod }); if (dd.tagId != null) s.vak = dd.tagId;
           }
           renderTimetable();
         } catch (err) {}
@@ -1137,14 +1178,14 @@
 
   // Assigning a fiche fully replaces the lesson: the slot title BECOMES the fiche
   // title (so a drop/replace visibly + on-commit renames the lesuur).
-  function assignFiche(slot, f) { var t = f.subject || f.title || ""; slot.ficheContentId = f.id; slot.ficheTitle = t; if (t) slot.title = t; slot.isGym = false; slot.themaFiche = false; }
+  function assignFiche(slot, f) { var t = f.subject || f.title || ""; slot.ficheContentId = f.id; slot.ficheTitle = t; slot.ficheIsMethod = !!(f.__method || f.isMethod); if (t) slot.title = t; slot.isGym = false; slot.themaFiche = false; }
   // Move / swap a fiche between two slots (drag one filled cell onto another) — the
-  // title travels with the fiche.
-  function slotPayload(s) { return { title: s.title, ficheContentId: s.ficheContentId, ficheTitle: s.ficheTitle, isGym: s.isGym, vak: s.vak }; }
-  function applySlotPayload(s, p) { s.title = p.title; s.ficheContentId = p.ficheContentId; s.ficheTitle = p.ficheTitle; s.isGym = p.isGym; s.themaFiche = false; s.vak = p.vak; }
-  function clearSlotContent(s) { s.title = s.origTitle; s.ficheContentId = null; s.ficheTitle = ""; s.isGym = false; s.themaFiche = false; s.vak = state.settings[slotKeyStd(s.dayIdx, s.time)] || ""; }
+  // title (and methode-flag) travels with the fiche.
+  function slotPayload(s) { return { title: s.title, ficheContentId: s.ficheContentId, ficheTitle: s.ficheTitle, ficheIsMethod: s.ficheIsMethod, isGym: s.isGym, vak: s.vak }; }
+  function applySlotPayload(s, p) { s.title = p.title; s.ficheContentId = p.ficheContentId; s.ficheTitle = p.ficheTitle; s.ficheIsMethod = p.ficheIsMethod; s.isGym = p.isGym; s.themaFiche = false; s.vak = p.vak; }
+  function clearSlotContent(s) { s.title = s.origTitle; s.ficheContentId = null; s.ficheTitle = ""; s.ficheIsMethod = false; s.isGym = false; s.themaFiche = false; s.vak = state.settings[slotKeyStd(s.dayIdx, s.time)] || ""; }
   // Fully empty a slot: drop the fiche AND wipe title/description (commit writes it blank).
-  function emptySlot(s) { s.title = ""; s.description = ""; s.ficheContentId = null; s.ficheTitle = ""; s.isGym = false; s.themaFiche = false; s.vak = ""; }
+  function emptySlot(s) { s.title = ""; s.description = ""; s.ficheContentId = null; s.ficheTitle = ""; s.ficheIsMethod = false; s.isGym = false; s.themaFiche = false; s.vak = ""; }
   function moveOrSwap(src, dst) {
     var a = slotPayload(src), b = slotPayload(dst);
     var dstFilled = !!(dst.ficheContentId || dst.isGym);
@@ -1255,7 +1296,7 @@
     var cur = sel.value || "all"; sel.innerHTML = "";
     sel.appendChild(h("option", { value: "all", text: "Iedereen" }));
     sel.appendChild(h("option", { value: String(myId()), text: "Ik" }));
-    state.colleagues.forEach(function (c) { sel.appendChild(h("option", { value: String(c.id), text: c.name })); });
+    state.colleagues.forEach(function (c) { sel.appendChild(h("option", { value: String(c.id), text: ownerName(c.id) })); });
     sel.value = cur;
   }
   // Full fiche list per owner, fetched once on demand and cached.
@@ -1283,7 +1324,7 @@
       res.innerHTML = "";
       if (!rows.length) { res.appendChild(h("div", { class: "qwp-gsearch-msg", text: "Geen resultaten." })); return; }
       rows.slice(0, 60).forEach(function (r) {
-        var pickData = { id: r.f.id, subject: r.f.subject, tagId: (String(r.owner) === String(myId()) ? guessVakTagFromTitle(r.f.subject) : null), owner: r.owner };
+        var pickData = { id: r.f.id, subject: r.f.subject, tagId: (String(r.owner) === String(myId()) ? guessVakTagFromTitle(r.f.subject) : null), owner: r.owner, isMethod: !!r.f.__method };
         var row = h("div", {
           class: "qwp-gsearch-row", draggable: "true", title: r.f.subject || "",
           ondragstart: function (e) { e.dataTransfer.setData("text/plain", JSON.stringify(pickData)); startDragTargets(pickData.tagId); },
@@ -1291,7 +1332,8 @@
           onclick: function () { assignFromGlobal(r.f); }
         }, [
           h("span", { class: "qwp-gsearch-t", text: r.f.subject || "(zonder titel)" }),
-          h("span", { class: "qwp-gsearch-badge", text: ownerName(r.owner) })
+          (r.f.__method || view.methodFicheIds[String(r.f.id)]) ? h("span", { class: "qwp-mbadge", text: "methode" }) : null,
+          h("span", { class: "qwp-gsearch-badge" + ((r.f.__method || view.methodFicheIds[String(r.f.id)]) ? " method" : ""), text: ownerName(r.owner) })
         ]);
         res.appendChild(row);
       });
@@ -1302,7 +1344,7 @@
     var s = view.selectedSlotId ? slotById(view.selectedSlotId) : null;
     if (!s || !isTargetable(s)) { setStatus("Sleep de fiche op een leeg lesuur (of open eerst een lesuur)."); return; }
     pushUndo("fiche toewijzen (zoek)");
-    assignFiche(s, { id: f.id, subject: f.subject });
+    assignFiche(s, { id: f.id, subject: f.subject, isMethod: !!f.__method });
     var g = guessVakTagFromTitle(f.subject); if (g) s.vak = g;
     renderTimetable(); setStatus("Toegewezen: " + (f.subject || ""));
   }
@@ -1381,7 +1423,7 @@
   function renderSource(pi) {
     var sel = elId("qwp-source-" + pi); if (!sel) return; sel.innerHTML = "";
     var owners = [{ id: myId(), name: "Ik" }].concat(state.colleagues);
-    owners.forEach(function (o) { sel.appendChild(h("option", { value: o.id, text: o.name, selected: (String(view.panels[pi].source) === String(o.id) ? "selected" : null) })); });
+    owners.forEach(function (o) { sel.appendChild(h("option", { value: o.id, text: ownerName(o.id), selected: (String(view.panels[pi].source) === String(o.id) ? "selected" : null) })); });
   }
   function renderSubcats(pi) {
     var wrap = elId("qwp-subcats-" + pi); if (!wrap) return; wrap.innerHTML = "";
@@ -1443,7 +1485,7 @@
     var col = tagColor(p.source, p.filterVak);
     items.forEach(function (f) {
       var chk = h("input", { type: "checkbox" }); if (p.picked[f.id]) chk.checked = true;
-      var pickData = { id: f.id, subject: f.subject, tagId: p.filterVak, color: col };
+      var pickData = { id: f.id, subject: f.subject, tagId: p.filterVak, color: col, isMethod: !!f.__method };
       var row = h("label", {
         class: "qwp-pfiche" + (p.picked[f.id] ? " picked" : ""), draggable: "true", title: f.subject || "",
         ondragstart: function (e) { e.dataTransfer.setData("text/plain", JSON.stringify(pickData)); startDragTargets(pickData.tagId); },
@@ -1451,6 +1493,7 @@
       }, [
         chk,
         h("span", { class: "qwp-pfiche-t", text: f.subject || "(zonder titel)" }),
+        (f.__method || view.methodFicheIds[String(f.id)]) ? h("span", { class: "qwp-mbadge", text: "methode" }) : null,
         usedThisYear(f) ? h("span", { class: "qwp-used", text: "gebruikt" }) : null
       ]);
       chk.onchange = function () { if (chk.checked) { p.picked[f.id] = pickData; } else { delete p.picked[f.id]; } row.classList.toggle("picked", chk.checked); updatePickCount(pi); };
@@ -1586,13 +1629,13 @@
         var snapshot = [], done = 0;
         assign.forEach(function (a) {
           if (!a.slotId) return; var s = slotById(a.slotId); if (!s) return;
-          snapshot.push({ itemId: s.itemId, title: s.title, ficheContentId: s.ficheContentId, ficheTitle: s.ficheTitle, isGym: s.isGym, themaFiche: s.themaFiche, vak: s.vak });
-          assignFiche(s, { id: a.pick.id, subject: a.pick.subject }); if (a.pick.tagId != null) s.vak = a.pick.tagId; done++;
+          snapshot.push({ itemId: s.itemId, title: s.title, ficheContentId: s.ficheContentId, ficheTitle: s.ficheTitle, ficheIsMethod: s.ficheIsMethod, isGym: s.isGym, themaFiche: s.themaFiche, vak: s.vak });
+          assignFiche(s, { id: a.pick.id, subject: a.pick.subject, isMethod: a.pick.isMethod }); if (a.pick.tagId != null) s.vak = a.pick.tagId; done++;
         });
         view.panels[pi].picked = {}; clearTargets(); modal.remove(); renderTimetable(); renderPickList(pi); updatePickCount(pi);
         setStatus(done + " les(sen) in het rooster gezet (nog niet weggeschreven).");
         showToast(done + " les(sen) toegevoegd.", "Ongedaan maken", function () {
-          snapshot.forEach(function (o) { var s = slotById(o.itemId); if (s) { s.title = o.title; s.ficheContentId = o.ficheContentId; s.ficheTitle = o.ficheTitle; s.isGym = o.isGym; s.themaFiche = o.themaFiche; s.vak = o.vak; } });
+          snapshot.forEach(function (o) { var s = slotById(o.itemId); if (s) { s.title = o.title; s.ficheContentId = o.ficheContentId; s.ficheTitle = o.ficheTitle; s.ficheIsMethod = o.ficheIsMethod; s.isGym = o.isGym; s.themaFiche = o.themaFiche; s.vak = o.vak; } });
           renderTimetable(); setStatus("Toevoeging ongedaan gemaakt.");
         });
       }
@@ -1628,7 +1671,7 @@
   // ---------- Undo (per-slot snapshot stack; Ctrl+Z + sidebar button) ----------
   // Only these slot fields are mutated by planning actions, so snapshot just them.
   function snapshotSlots() {
-    return view.slots.map(function (s) { return { itemId: s.itemId, title: s.title, ficheContentId: s.ficheContentId, ficheTitle: s.ficheTitle, isGym: s.isGym, themaFiche: s.themaFiche, vak: s.vak }; });
+    return view.slots.map(function (s) { return { itemId: s.itemId, title: s.title, ficheContentId: s.ficheContentId, ficheTitle: s.ficheTitle, ficheIsMethod: s.ficheIsMethod, isGym: s.isGym, themaFiche: s.themaFiche, vak: s.vak }; });
   }
   function pushUndo(label) {
     view.undoStack.push({ label: label || "actie", snap: snapshotSlots() });
@@ -1638,7 +1681,7 @@
   function doUndo() {
     if (!view.undoStack.length) { setStatus("Niets om ongedaan te maken."); return; }
     var entry = view.undoStack.pop();
-    entry.snap.forEach(function (o) { var s = slotById(o.itemId); if (s) { s.title = o.title; s.ficheContentId = o.ficheContentId; s.ficheTitle = o.ficheTitle; s.isGym = o.isGym; s.themaFiche = o.themaFiche; s.vak = o.vak; } });
+    entry.snap.forEach(function (o) { var s = slotById(o.itemId); if (s) { s.title = o.title; s.ficheContentId = o.ficheContentId; s.ficheTitle = o.ficheTitle; s.ficheIsMethod = o.ficheIsMethod; s.isGym = o.isGym; s.themaFiche = o.themaFiche; s.vak = o.vak; } });
     renderTimetable(); refreshUndoBtn(); setStatus("Ongedaan: " + entry.label);
   }
   function refreshUndoBtn() {
@@ -1661,8 +1704,14 @@
         lbl
       ])
     ]);
-    // Swallow every interaction while writing (capture phase).
-    ["click", "mousedown", "keydown", "wheel", "dragstart"].forEach(function (ev) { ov.addEventListener(ev, function (e) { e.stopPropagation(); if (ev === "keydown" || ev === "dragstart") e.preventDefault(); }, true); });
+    // Swallow every interaction while writing (capture phase) — BUT never swallow clicks
+    // on the result buttons (e.g. "Sluiten"), or a failed commit would lock the UI.
+    ["click", "mousedown", "keydown", "wheel", "dragstart"].forEach(function (ev) {
+      ov.addEventListener(ev, function (e) {
+        if (e.target && e.target.closest && e.target.closest(".qwp-commit-card button")) return;
+        e.stopPropagation(); if (ev === "keydown" || ev === "dragstart") e.preventDefault();
+      }, true);
+    });
     els.page.appendChild(ov);
     updateCommitOverlay(0, total);
   }
@@ -1953,26 +2002,42 @@
       });
       var body = h("div", { class: "qwp-modal-body" });
       function rowVak(ps) { return ps.vak ? ((tagTitle("self", ps.vak) || "").trim()) : (ps.isGym ? "gym" : ""); }
+      // Readable day×time grid: each prior filled lesuur is a click-to-toggle tile.
       function render() {
         body.innerHTML = "";
-        body.appendChild(h("p", { class: "qwp-note", text: "Vink aan wat je naar deze week wil overnemen. Enkel lege lesuren op hetzelfde moment worden gevuld." }));
-        rows.forEach(function (r) {
-          var avail = r.target && isTargetable(r.target);
-          var cb = h("input", { type: "checkbox" }); cb.checked = r.chk && !!avail; cb.disabled = !avail;
-          cb.onchange = function () { r.chk = cb.checked; };
-          var meta = DAY_NAMES[r.ps.dayIdx].toLowerCase() + " " + (r.ps.time || "") + (rowVak(r.ps) ? " · " + rowVak(r.ps) : "");
-          var status = !r.target ? "(geen lesuur deze week)" : (!avail ? "(al ingevuld)" : "");
-          body.appendChild(h("label", { class: "qwp-copy-row" + (avail ? "" : " disabled") }, [
-            cb,
-            h("span", { class: "qwp-copy-fiche", text: r.ps.isGym ? (r.ps.title || "Gym") : (r.ps.ficheTitle || r.ps.title || "(les)") }),
-            h("span", { class: "qwp-copy-meta", text: meta }),
-            status ? h("span", { class: "qwp-copy-note", text: status }) : null
-          ]));
+        body.appendChild(h("p", { class: "qwp-note", text: "Klik de lesuren die je wil overnemen (blauw = gekozen). Enkel lege lesuren op hetzelfde moment worden gevuld." }));
+        var times = []; rows.forEach(function (r) { var t = r.ps.time || ""; if (times.indexOf(t) < 0) times.push(t); });
+        times.sort(function (a, b) { return String(a).localeCompare(String(b), undefined, { numeric: true }); });
+        function cellFor(day, time) { return rows.filter(function (r) { return r.ps.dayIdx === day && (r.ps.time || "") === time; })[0]; }
+        var grid = h("div", { class: "qwp-copy-grid" });
+        grid.style.gridTemplateColumns = "58px repeat(5, minmax(0, 1fr))";
+        grid.appendChild(h("div", { class: "qwp-copy-corner", text: "uur" }));
+        for (var d0 = 0; d0 < 5; d0++) grid.appendChild(h("div", { class: "qwp-copy-dayhd", text: DAY_NAMES[d0] }));
+        times.forEach(function (t) {
+          grid.appendChild(h("div", { class: "qwp-copy-timelbl", text: t }));
+          for (var d = 0; d < 5; d++) {
+            (function (day) {
+              var r = cellFor(day, t);
+              if (!r) { grid.appendChild(h("div", { class: "qwp-copy-cell empty" })); return; }
+              var avail = !!(r.target && isTargetable(r.target));
+              var tile = h("div", {
+                class: "qwp-copy-cell tile" + (avail ? "" : " disabled") + (r.chk && avail ? " sel" : ""),
+                title: avail ? "Klik om te (de)selecteren" : (!r.target ? "geen lesuur deze week" : "al ingevuld"),
+                onclick: function () { if (!avail) return; r.chk = !r.chk; render(); }
+              }, [
+                h("div", { class: "qwp-copy-t", text: r.ps.isGym ? (r.ps.title || "Gym") : (r.ps.ficheTitle || r.ps.title || "(les)") }),
+                rowVak(r.ps) ? h("div", { class: "qwp-copy-vak", text: rowVak(r.ps) }) : null,
+                !avail ? h("div", { class: "qwp-copy-x", text: !r.target ? "geen lesuur" : "al ingevuld" }) : null
+              ]);
+              grid.appendChild(tile);
+            })(d);
+          }
         });
+        body.appendChild(grid);
       }
       function setAll(fn) { rows.forEach(function (r) { var avail = r.target && isTargetable(r.target); r.chk = avail && fn(r); }); render(); }
       var modal = h("div", { class: "qwp-modal", id: "qwp-modal" }, [
-        h("div", { class: "qwp-modal-box wide" }, [
+        h("div", { class: "qwp-modal-box wide qwp-copy-modal" }, [
           h("div", { class: "qwp-modal-hd", text: "Kopieer vorige week — " + filled.length + " ingevulde lesuren" }),
           body,
           h("div", { class: "qwp-modal-ft" }, [
@@ -1988,7 +2053,7 @@
                 pushUndo("kopieer vorige week");
                 chosen.forEach(function (r) {
                   if (r.ps.isGym) { r.target.isGym = true; r.target.ficheContentId = null; r.target.ficheTitle = ""; r.target.themaFiche = false; }
-                  else { assignFiche(r.target, { id: r.ps.ficheContentId, subject: r.ps.ficheTitle }); }
+                  else { assignFiche(r.target, { id: r.ps.ficheContentId, subject: r.ps.ficheTitle, isMethod: r.ps.ficheIsMethod }); }
                   if (r.ps.vak) r.target.vak = r.ps.vak;
                 });
                 modal.remove(); renderTimetable();
@@ -2023,11 +2088,50 @@
       h("input", { class: "qwp-pop-search", placeholder: "Zoek collega…", oninput: function (e) { renderList(e.target.value); } }),
       listWrap,
       h("div", { class: "qwp-pop-ft" }, [
-        h("button", { class: "qwp-btn", text: "Laden", onclick: function () { state.colleagues = view.people.filter(function (p) { return selectedIds.indexOf(p.id) > -1; }).map(function (p) { return { id: p.id, name: p.name }; }); saveState(); pop.remove(); loadColleagueFiches(); } }),
+        h("button", { class: "qwp-btn", text: "Laden", onclick: function () { var methods = state.colleagues.filter(function (c) { return c.isMethod; }); state.colleagues = methods.concat(view.people.filter(function (p) { return selectedIds.indexOf(p.id) > -1; }).map(function (p) { return { id: p.id, name: p.name }; })); saveState(); pop.remove(); loadColleagueFiches(); } }),
         h("button", { class: "qwp-btn qwp-ghost", text: "Annuleren", onclick: function () { pop.remove(); } })
       ])
     ]);
     els.page.appendChild(pop);
+  }
+
+  // ---------- Methode popover (vendor libraries) ----------
+  // Chosen methodes become pseudo-colleagues (id "method:<KEY>") so they appear in the
+  // owner selectors + panels + global search. Their fiches are read-only vendor content
+  // and are badged "methode" everywhere.
+  function openMethodesPopover() {
+    var ex = elId("qwp-pop"); if (ex) { ex.remove(); return; }
+    var chosen = {}; state.colleagues.filter(function (c) { return c.isMethod; }).forEach(function (c) { chosen[c.methodKey] = c; });
+    var pop = h("div", { class: "qwp-pop", id: "qwp-pop" }, [
+      h("div", { class: "qwp-pop-hd", text: "Kies methodes" }),
+      h("div", { class: "qwp-pop-list", id: "qwp-meth-list" }, [h("div", { class: "qwp-empty", text: "Methodes laden…" })]),
+      h("div", { class: "qwp-pop-ft" }, [
+        h("button", { class: "qwp-btn", text: "Laden", onclick: function () {
+          var others = state.colleagues.filter(function (c) { return !c.isMethod; });
+          state.colleagues = others.concat(Object.keys(chosen).map(function (k) { return chosen[k]; }));
+          saveState(); pop.remove(); loadColleagueFiches();
+        } }),
+        h("button", { class: "qwp-btn qwp-ghost", text: "Annuleren", onclick: function () { pop.remove(); } })
+      ])
+    ]);
+    els.page.appendChild(pop);
+    fetchMethods().then(function (methods) {
+      var listWrap = elId("qwp-meth-list"); if (!listWrap) return; listWrap.innerHTML = "";
+      if (!methods.length) { listWrap.appendChild(h("div", { class: "qwp-empty", text: "Geen methodes beschikbaar." })); return; }
+      methods.sort(function (a, b) { return (a.name || "").localeCompare(b.name || "", undefined, { numeric: true }); });
+      methods.forEach(function (mth) {
+        var sub = ((mth.publisher && mth.publisher.name) ? mth.publisher.name + " · " : "") + ((mth.grades || []).join(", "));
+        var row = h("label", { class: "qwp-pop-row" }, [
+          h("input", { type: "checkbox", onchange: function (e) {
+            if (e.target.checked) chosen[mth.id] = { id: METHOD_PREFIX + mth.id, name: mth.name, isMethod: true, methodKey: mth.id, isCluster: !!mth.is_cluster };
+            else delete chosen[mth.id];
+          } }),
+          h("span", {}, [h("span", { text: mth.name }), h("span", { class: "qwp-pop-sub", text: sub ? ("  (" + sub + ")") : "" })])
+        ]);
+        if (chosen[mth.id]) row.querySelector("input").checked = true;
+        listWrap.appendChild(row);
+      });
+    });
   }
 
   // ---------- Review + commit (LOCKED until approved) ----------
@@ -2105,10 +2209,11 @@
         h("div", { class: "qwp-modal-ft" }, [
           h("button", { class: "qwp-btn qwp-ghost", text: "Terug", onclick: function () { modal.remove(); } }),
           h("button", {
-            class: "qwp-btn qwp-approve", text: "Goedkeuren en ontgrendelen", onclick: function () {
+            class: "qwp-btn qwp-approve", text: "Goedkeuren en wegschrijven", onclick: function () {
               _approvedPlan = plan; modal.remove();
-              var cb = elId("qwp-commit"); cb.removeAttribute("disabled"); cb.textContent = "Wegschrijven (" + plan.length + ")"; cb.classList.add("armed");
-              setStatus("Goedgekeurd. Klik 'Wegschrijven' om live te schrijven.");
+              var cb = elId("qwp-commit"); if (cb) { cb.removeAttribute("disabled"); cb.classList.add("armed"); }
+              setStatus("Goedgekeurd — wegschrijven…");
+              doCommit(); // approve writes immediately, no extra button press
             }
           })
         ])
@@ -2123,11 +2228,11 @@
     showCommitOverlay(plan.length);
     function finish() {
       _approvedPlan = null;
-      var cb = elId("qwp-commit"); cb.setAttribute("disabled", "true"); cb.textContent = "Wegschrijven (vergrendeld)"; cb.classList.remove("armed");
+      var cb = elId("qwp-commit"); if (cb) { cb.setAttribute("disabled", "true"); cb.classList.remove("armed"); }
       if (fails.length) {
         var first = fails[0];
         setStatus(ok + " ok, " + fails.length + " fout: " + first.label + " — " + first.error + (fails.length > 1 ? " (+ " + (fails.length - 1) + " meer, zie console)" : ""));
-        console.error("[QWP] commit failures:", fails);
+        console.error("[QWP] commit failures:", JSON.stringify(fails));
         commitOverlayResult(ok, fails);
         reloadAndRender(); // refresh the planner for what did persist
         return;
@@ -2151,7 +2256,7 @@
       // POST the fiche first (it sets the item title to Questi's decorated fiche title),
       // THEN PATCH to add description=vak — reusing that decorated title so we don't clobber
       // it with our plain one. (No-fiche rows carry attachments:[] to detach.)
-      (p.fiche ? postAttachment(p.itemId, p.fiche.contentId, p.fiche.groups) : Promise.resolve(null))
+      (p.fiche ? ((p.fiche.isMethod || view.methodFicheIds[String(p.fiche.contentId)]) ? postMethodAttachment(p.itemId, p.fiche.contentId, p.fiche.groups) : postAttachment(p.itemId, p.fiche.contentId, p.fiche.groups)) : Promise.resolve(null))
         .then(function (res) { var t = res && res.result && res.result.title; if (t) p.patchBody.title = t; return patchItem(p.itemId, p.patchBody, p.range); })
         .then(function () { ok++; })
         // Continue on error — record it and keep going so one bad row can't block the rest.
@@ -2197,6 +2302,16 @@
   function hide() { if (els.root) els.root.classList.remove("qwp-show"); document.documentElement.classList.remove("qwp-locked"); var p = elId("qwp-pop"); if (p) p.remove(); }
   function toggle() { if (!els.root) { boot(); return; } var open = els.root.classList.toggle("qwp-show"); document.documentElement.classList.toggle("qwp-locked", open); }
   window.__QWP_TOGGLE = toggle;
+  // Opens the separate Lesfiche-manager module (lessons.js). If the planner's context
+  // isn't detected yet, boot it first so lessons.js can reuse ctx via __QWP_SHARED.
+  function openLessonsManager() {
+    if (!(window.__QWP_LESSONS && window.__QWP_LESSONS.open)) { console.warn("[QWP] lessons module niet geladen"); return; }
+    if (!ctx.ready) { setStatus("Context laden vóór lesfichebeheer…"); detectContext().then(function () { window.__QWP_LESSONS.open(); }); return; }
+    window.__QWP_LESSONS.open();
+  }
+  // Exposed so the in-page toolbar "Lesfiches" chip (content.js) can open the manager
+  // even when the planner overlay was never opened — it detects context on demand.
+  window.__QWP_OPEN_LESSONS = openLessonsManager;
 
   function reconcilePanelSources() {
     var valid = [String(myId())].concat(state.colleagues.map(function (c) { return String(c.id); }));
@@ -2324,4 +2439,15 @@
 
   // Test hook (no effect in the browser).
   window.__QWP_TEST = { boot: boot, view: view, state: state, ctx: ctx, detectContext: detectContext, renderTimetable: renderTimetable, openSlotPopup: openSlotPopup, openMassAdd: openMassAdd, openInstellingen: openInstellingen };
+
+  // Read-only helper bag for the sibling Lesfiche-manager module (lessons.js), which
+  // loads after planner.js. `ctx` is shared BY REFERENCE, so lessons.js always sees the
+  // live detected context (schoolId/schoolyear/ownerId/…) once detectContext resolves.
+  window.__QWP_SHARED = {
+    ctx: ctx, API: API, API_ROOT: API_ROOT,
+    jget: jget, qs: qs, xsrfToken: xsrfToken, writeHeaders: writeHeaders,
+    fetchTags: fetchTags, fetchOwnTags: fetchOwnTags, fetchSharedTags: fetchSharedTags,
+    topTagsForOwner: topTagsForOwner, childTags: childTags, tagTitle: tagTitle, tagColor: tagColor,
+    ownerName: ownerName, h: h
+  };
 })();

@@ -19,18 +19,20 @@ html.qwp-locked, html.qwp-locked body { overflow: hidden !important; }
   --ink:#1f2733; --muted:#5b6470; --faint:#8b94a0;
   --line:#e4e8ee; --line-soft:#eef1f5;
   --surface:#ffffff; --canvas:#ffffff; --raised:#fbfcfe;
-  /* Questi brand navy as the accent (matches the app header) instead of a generic blue. */
-  --accent:#33485d; --accent-weak:#eaeef2; --accent-line:#c2ccd7;
+  /* Questi brand tokens (from their Angular-Material theme): primary slate #304651,
+     accent lime #e4e642, warn #f44336. Blends the panel into the host app. */
+  --accent:#304651; --accent-weak:#eaeef1; --accent-line:#c2ccd7;
+  --accent2:#e4e642; --accent2-ink:#304651;
   --change:#137a3a; --change-weak:#e8f5ec; --change-line:#b4e0c2;
   --thema:#a86400; --thema-weak:#fbf1df; --thema-line:#ecd3a6;
   --gym:#51607a; --gym-weak:#eef1f6;
-  --danger:#b3261e;
+  --danger:#f44336;
   --radius:10px; --radius-sm:8px;
   --shadow:0 10px 40px rgba(15,23,35,.22);
   --wksep:#c9d2df;
   position: fixed; inset: 0; z-index: 2147483000;
   display: none;
-  font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: urw-din, q-urw-din, helvetica, "Segoe UI", Arial, sans-serif;
   color: var(--ink); -webkit-font-smoothing: antialiased;
 }
 #qwp-overlay.qwp-show { display: block; }
@@ -105,6 +107,21 @@ html.qwp-locked, html.qwp-locked body { overflow: hidden !important; }
 .qwp-copy-fiche { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .qwp-copy-meta { color:var(--muted); font-size:11.5px; white-space:nowrap; }
 .qwp-copy-note { color:var(--faint); font-size:11px; font-style:italic; white-space:nowrap; }
+/* Kopieer-vorige-week: clickable day×time grid */
+.qwp-copy-modal { width:1040px; max-width:96vw; }
+.qwp-copy-grid { display:grid; gap:6px; margin-top:8px; }
+.qwp-copy-corner { font-size:11px; color:var(--faint); }
+.qwp-copy-dayhd { font-size:12px; font-weight:700; color:var(--ink); text-align:center; padding:4px 0; }
+.qwp-copy-timelbl { font-size:12px; font-weight:600; color:var(--muted); display:flex; align-items:center; justify-content:center; font-variant-numeric:tabular-nums; }
+.qwp-copy-cell { min-height:52px; border:1px solid var(--line); border-radius:8px; padding:6px 8px; }
+.qwp-copy-cell.empty { border-style:dashed; background:var(--line-soft); opacity:.5; }
+.qwp-copy-cell.tile { cursor:pointer; background:var(--surface); transition:background .1s, border-color .1s; }
+.qwp-copy-cell.tile:hover { border-color:var(--accent-line); background:var(--accent-weak); }
+.qwp-copy-cell.tile.sel { border-color:var(--accent); background:var(--accent-weak); box-shadow:inset 0 0 0 2px var(--accent); }
+.qwp-copy-cell.tile.disabled { cursor:default; opacity:.5; background:var(--line-soft); }
+.qwp-copy-t { font-size:12.5px; font-weight:600; line-height:1.25; color:var(--ink); overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+.qwp-copy-vak { font-size:10.5px; color:var(--muted); margin-top:2px; text-transform:uppercase; letter-spacing:.02em; }
+.qwp-copy-x { font-size:10.5px; color:var(--faint); font-style:italic; margin-top:2px; }
 /* Legend */
 .qwp-legend-row { display:flex; align-items:center; gap:8px; font-size:11px; color:var(--muted); }
 .qwp-legend-sw { width:13px; height:13px; border-radius:3px; flex:0 0 auto; border:1px solid var(--line); }
@@ -134,6 +151,16 @@ html.qwp-locked, html.qwp-locked body { overflow: hidden !important; }
 .qwp-gsearch-t { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .qwp-gsearch-badge { font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:.03em; color:var(--muted); background:var(--line-soft); border-radius:999px; padding:2px 7px; white-space:nowrap; }
 .qwp-gsearch-msg { padding:9px 11px; font-size:12px; color:var(--faint); }
+
+/* Top bar: week nav (left) + global search (middle, grows) + close ✕ (right) */
+.qwp-topbar { display:flex; align-items:center; gap:12px; padding:8px 14px; background:var(--surface); border-bottom:1px solid var(--line); }
+.qwp-topbar .qwp-seg.qwp-topseg { flex:0 0 auto; width:150px; }
+.qwp-topbar .qwp-navrow { flex:0 0 auto; margin:0; }
+.qwp-topbar .qwp-gsearch { flex:1; padding:0; border-bottom:none; background:transparent; }
+.qwp-topbar .qwp-gsearch-results { left:0; }
+.qwp-topx { flex:0 0 auto; width:34px; height:34px; border:1px solid var(--line); border-radius:var(--radius-sm); background:var(--surface); color:var(--muted); cursor:pointer; font-size:15px; }
+.qwp-topx:hover { background:var(--accent-weak); color:var(--ink); }
+.qwp-navbtn { padding:7px 11px; }
 
 /* Top navigation bar */
 .qwp-nav { display:flex; align-items:center; gap:8px; padding:10px 16px; background:var(--surface); border-bottom:1px solid var(--line); }
@@ -250,6 +277,10 @@ html.qwp-locked, html.qwp-locked body { overflow: hidden !important; }
 .qwp-pfiche input { width:15px; height:15px; accent-color:var(--accent); flex:0 0 auto; }
 .qwp-pfiche-t { flex:1; font-size:12px; line-height:1.3; }
 .qwp-used { font-size:9px; font-weight:700; letter-spacing:.03em; text-transform:uppercase; color:var(--change); background:var(--change-weak); border-radius:999px; padding:2px 6px; white-space:nowrap; }
+/* methode-fiche marker (vendor/read-only) — visible in panel lists + global search */
+.qwp-mbadge { font-size:9px; font-weight:700; letter-spacing:.03em; text-transform:uppercase; color:#5b3b00; background:#ffe0a3; border-radius:999px; padding:2px 6px; white-space:nowrap; }
+.qwp-gsearch-badge.method { color:#5b3b00; background:#ffe0a3; }
+.qwp-pop-sub { color:var(--muted); font-size:11px; }
 .qwp-picker-ft { display:flex; align-items:center; gap:10px; padding:8px 12px; border-top:1px solid var(--line-soft); }
 .qwp-pick-count { font-size:12px; color:var(--muted); }
 .qwp-empty { color:var(--faint); padding:18px 12px; text-align:center; font-size:12.5px; grid-column:1 / -1; }
