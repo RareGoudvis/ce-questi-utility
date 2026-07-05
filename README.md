@@ -19,7 +19,7 @@ drie browsers bijna identiek.
    en pak het ZIP-bestand uit naar een map die je makkelijk terugvindt
    (bv. `Documenten/questi-weekplanner`). *Of*, als je Git kent:
    ```
-   git clone https://github.com/RareGoudvis/questi-calendar-workflow-fix.git
+   git clone https://github.com/RareGoudvis/ce-questi-utility.git
    ```
    > Belangrijk: onthoud waar de map staat en verwijder ze niet — de browser leest de
    > extensie telkens uit die map.

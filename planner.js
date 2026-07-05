@@ -72,9 +72,6 @@
     });
     if (changed) saveState();
   }
-  // Map a live top-tag id back to a VAKKEN vak id (Instellingen slot→vak). Unknown
-  // tags (media, schrift, …) → null (no Instellingen preference).
-  function vakIdForTag(tagId) { for (var i = 0; i < VAKKEN.length; i++) if (view.vakTagMap[VAKKEN[i].id] != null && String(view.vakTagMap[VAKKEN[i].id]) === String(tagId)) return VAKKEN[i].id; return null; }
 
   // ---------- Storage ----------
   var STORE_KEY = "qwp_state_v6";
@@ -598,7 +595,7 @@
     // title-guessing: downstream tooling reads this to disambiguate same-titled fiches
     // (e.g. "Thema 5 - Les …"), so it must be the real tag, never a heuristic from the title.
     var top = topTagIdOf(slot.vak);
-    return top != null ? ((tagTitle("self", top) || "").trim()) : "";
+    return top != null ? ((anyTagTitle(top) || "").trim()) : "";
   }
   function toHtmlDesc(t) { if (t == null) return ""; return String(t).replace(/\n/g, "<br />"); }
   function stripHtml(s) { return String(s == null ? "" : s).replace(/<br \/>/g, "").replace(/<[^>]*>/g, "").trim(); }
@@ -616,47 +613,6 @@
     return descChanged || titleChanged || ficheChanged;
   }
 
-  function ficheTagIds(f) {
-    var raw = f.tags || f.tagIds || f.tag_ids || f.categories || [];
-    if (!Array.isArray(raw)) return [];
-    return raw.map(function (t) { return typeof t === "object" ? (t.id != null ? t.id : t.tagId) : t; }).filter(function (x) { return x != null; });
-  }
-  var _anyTagsMemo = null;
-  function datasetHasFicheTags() {
-    if (_anyTagsMemo != null) return _anyTagsMemo;
-    _anyTagsMemo = view.ficheGroups.some(function (g) { return g.items.some(function (f) { return ficheTagIds(f).length; }); });
-    return _anyTagsMemo;
-  }
-  function resolveOwner(ownerId) { return (ownerId === "self" || ownerId == null) ? ctx.ownerId : ownerId; }
-  function vakTagIds(vak) {
-    if (!vak) return {};
-    var root = vakTagId(vak.id); if (root == null) return {};
-    var byParent = {};
-    view.tags.forEach(function (t) { (byParent[t.parent] = byParent[t.parent] || []).push(t); });
-    var set = {}; set[root] = true;
-    var stack = [root];
-    while (stack.length) { var cur = stack.pop(); (byParent[cur] || []).forEach(function (t) { if (!set[t.id]) { set[t.id] = true; stack.push(t.id); } }); }
-    return set;
-  }
-  function ficheInVak(f, vak) {
-    if (!vak) return true;
-    if (datasetHasFicheTags()) {
-      var set = vakTagIds(vak); var ids = ficheTagIds(f);
-      for (var i = 0; i < ids.length; i++) { if (set[ids[i]]) return true; }
-      return false;
-    }
-    return vak.re.test(f.subject || "");
-  }
-  function subcatsForVak(ownerId, vak) {
-    if (!vak || !datasetHasFicheTags()) return [];
-    var set = vakTagIds(vak); var owner = resolveOwner(ownerId); var root = vakTagId(vak.id);
-    return view.tags.filter(function (t) {
-      if (t.id === root) return false;
-      if (!set[t.id]) return false;
-      var o = t.owner && (typeof t.owner === "object" ? t.owner.id : t.owner);
-      return (t.type === "user" || t.type === "default") && (o === owner || o == null);
-    }).sort(function (a, b) { return (a.title || "").localeCompare(b.title || ""); });
-  }
   // Current school-year window: Sep 1 (start year) → Aug 31 (start year + 1).
   function schoolYearBounds() {
     var sy = String(ctx.schoolyear || ""), m = sy.match(/(20\d{2})\s*-\s*(20\d{2})/), startY;
@@ -868,10 +824,10 @@
     return overlay;
   }
 
-  // Resolve any (own) tag id up to its top-level subject tag id.
+  // Resolve any tag id (own OR colleague) up to its top-level subject tag id.
   function topTagIdOf(tagId) {
     if (tagId == null || tagId === "") return null;
-    var pool = ownTagsList(), byId = {};
+    var pool = anyTagsList(), byId = {};
     pool.forEach(function (t) { byId[t.id] = t; });
     var cur = byId[tagId], guard = 0;
     while (cur && cur.parent && String(cur.parent) !== "0" && byId[cur.parent] && guard++ < 20) cur = byId[cur.parent];
@@ -891,8 +847,8 @@
         else {
           // Subject = the slot's live top-level tag (same source as the written description).
           var top = topTagIdOf(s.vak);
-          label = top != null ? ((tagTitle("self", top) || "").trim() || "Overig") : "Overig";
-          if (top != null) color = tagColor("self", top);
+          label = top != null ? ((anyTagTitle(top) || "").trim() || "Overig") : "Overig";
+          if (top != null) color = anyTagColor(top);
         }
         if (!counts[label]) counts[label] = { n: 0, color: color };
         counts[label].n++;
@@ -1300,6 +1256,13 @@
   function tagTitle(source, tagId) { var p = tagPoolFor(source); for (var i = 0; i < p.length; i++) if (String(p[i].id) === String(tagId)) return p[i].title; return ""; }
   // Questi tag color (hex) — used for drawer accent, pill dots, modal subject dots.
   function tagColor(source, tagId) { var p = tagPoolFor(source); for (var i = 0; i < p.length; i++) if (String(p[i].id) === String(tagId)) return p[i].color || null; return null; }
+  // Owner-agnostic tag lookups over the COMBINED pool (own + all colleagues). Used where a slot's
+  // vak may be a colleague's tag id (a colleague fiche planned into your agenda) — the written
+  // description must still name the vak. Tag ids are globally unique DB keys, so concat is safe.
+  function anyTagsList() { return ownTagsList().concat(sharedTagsList()); }
+  function anyTagById(id) { var p = anyTagsList(); for (var i = 0; i < p.length; i++) if (String(p[i].id) === String(id)) return p[i]; return null; }
+  function anyTagTitle(id) { var t = anyTagById(id); return t ? (t.title || "") : ""; }
+  function anyTagColor(id) { var t = anyTagById(id); return t ? (t.color || null) : null; }
   function defaultTopTagId(source) { var t = panelTopTags(source); return t.length ? t[0].id : null; }
 
   // ---------- Global cross-owner search bar ----------
@@ -1903,7 +1866,7 @@
         if (!f) return { status: STAT.WARN, expected: "≥1 fiche", found: "0 (num_records=" + total + ")", next: "Tag levert geen fiches — controleer default_tagId." };
         var cands = ["tags", "tagIds", "tag_ids", "categories"].filter(function (k) { return has(f, k); });
         var tagNote = cands.length ? ("per-fiche tagveld terug: " + cands.join(",") + " — model mogelijk gewijzigd") : "geen per-fiche tags (verwacht)";
-        return { status: cands.length ? STAT.WARN : STAT.OK, expected: "id,subject; geen per-fiche tags", found: "num_records=" + total + "; " + tagNote, next: cands.length ? "Controleer ficheInVak/ficheTagIds als filtering weer client-side moet." : "" };
+        return { status: cands.length ? STAT.WARN : STAT.OK, expected: "id,subject; geen per-fiche tags", found: "num_records=" + total + "; " + tagNote, next: cands.length ? "Per-fiche tags terug — controleer of client-side tagfiltering weer nodig is." : "" };
       });
     }));
     checks.push(wrap("/cal/lessons/tags?filter=own", "read", function () {
@@ -2355,7 +2318,7 @@
   }
 
   // ---------- Loading ----------
-  function upsertGroup(ownerId, oname, items) { var g = groupFor(ownerId); if (g) { g.items = items; g.ownerName = oname; } else view.ficheGroups.push({ ownerId: ownerId, ownerName: oname, items: items }); _anyTagsMemo = null; }
+  function upsertGroup(ownerId, oname, items) { var g = groupFor(ownerId); if (g) { g.items = items; g.ownerName = oname; } else view.ficheGroups.push({ ownerId: ownerId, ownerName: oname, items: items }); }
   function loadOwnFiches() { return fetchAllFiches(myId()).then(function (r) { upsertGroup(myId(), "Ik", r.items); return r; }); }
   // Colleagues changed → refresh shared tags + drop stale per-tag cache, re-render.
   function loadColleagueFiches() {

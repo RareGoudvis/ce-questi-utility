@@ -1,5 +1,5 @@
 {
-  "version": "0.4.0",
-  "url": "https://github.com/RareGoudvis/questi-calendar-workflow-fix",
+  "version": "1.0.0",
+  "url": "https://github.com/RareGoudvis/ce-questi-utility",
   "notes": "Bump this 'version' (and manifest.json 'version') on every release. The extension compares its installed version against this file and shows an update banner when this is newer."
 }
