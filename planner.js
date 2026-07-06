@@ -250,6 +250,22 @@
     if (best) ctx.calendarId = best;
   }
   function thisWeekRange() { var d = new Date(); var day = (d.getDay() + 6) % 7; var mon = new Date(d); mon.setDate(d.getDate() - day); var end = new Date(mon); end.setDate(mon.getDate() + 6); return { start: isoDate(mon), end: isoDate(end) }; }
+  // Monday (ISO) of the week containing a given date string.
+  function mondayOf(iso) { var d = addDays(iso, 0); if (!d) return null; return isoDate(addDays(iso, -((d.getDay() + 6) % 7))); }
+  // The week the user is currently viewing in Questi — read from the most recent /cal/items request
+  // Questi's own SPA fired (its `startdate` param = the viewed Monday). Locale/DOM-independent; falls
+  // back to null when resource timing has nothing (→ callers use today's week).
+  function detectViewedWeekStart() {
+    try {
+      var best = null, bt = -1, es = performance.getEntriesByType("resource");
+      for (var i = 0; i < es.length; i++) {
+        var n = es[i].name || ""; if (n.indexOf("/cal/items") < 0) continue;
+        var m = /[?&]startdate=(\d{4}-\d{2}-\d{2})/.exec(n); if (!m) continue;
+        if (es[i].startTime > bt) { bt = es[i].startTime; best = m[1]; }
+      }
+      return best ? mondayOf(best) : null;
+    } catch (e) { return null; }
+  }
 
   // Break the chicken-egg: Questi's own page already fired
   // /api/...?schoolId=NNNN&schoolyear=YYYY requests. Their URLs live in the
@@ -1360,9 +1376,9 @@
     if (document.getElementById("qwp-print-overlay")) { document.getElementById("qwp-print-overlay").classList.add("qwp-show"); return; }
     printToast("Weekplanning laden…");
     ensurePrintData().then(function () {
-      var wr = thisWeekRange();
+      var start = detectViewedWeekStart() || thisWeekRange().start;   // Questi's viewed week, else today
       var weeks = state.weeks || 1;
-      return fetchPrintView(wr.start, weeks).then(function (pv) { hideToast(); openPrintOverlay(pv); });
+      return fetchPrintView(start, weeks).then(function (pv) { hideToast(); openPrintOverlay(pv); });
     }).catch(function (e) {
       printToast("Afdrukken lukt niet — open eerst je agenda in Questi (en log in).", true);
       console.error("[QWP] print:", e);
@@ -2337,7 +2353,9 @@
           .catch(function (e) { addRow({ name: "[" + group + "] " + name, status: STAT.FAIL, found: String(e && e.message || e), next: "onverwachte fout — zie console" }); });
       };
     }
-    var wr = thisWeekRange();
+    // Test the week the planner has loaded (the viewed week) so the read-contract check hits a real
+    // lesson; fall back to today's week when run before any load.
+    var wr = view.weekStart ? { start: view.weekStart, end: isoDate(addDays(view.weekStart, 7 * (view.weeks || 1) - 1)) } : thisWeekRange();
     var cal = ctx.calendarId ? [ctx.calendarId, "cal_holidays"] : null;
     var itemsUrl = API + "/items?" + qs({ schoolId: ctx.schoolId, startdate: wr.start, enddate: wr.end, calendars: cal || undefined });
     var shared = { authed: false, items: null, sampleItem: null, detail: null };
@@ -2351,23 +2369,30 @@
         return { expected: "JSON 200", found: "HTTP " + res.status };
       });
     }));
+    // Real lesson items only — skips holidays + full-day/placeholder items (those legitimately lack
+    // title/groups/etc., so sampling one would false-FAIL the read-contract check).
+    function lessonItems(arr) {
+      return (arr || []).filter(function (x) { return x && x.id_calendar !== "cal_holidays" && !x.is_fullday_item && /[T ]\d{2}:\d{2}/.test(String(x.startdate || "")); });
+    }
     // 2. Read contract
     checks.push(wrap("/cal/items (weekitems)", "read", function () {
       if (!shared.authed) return { status: STAT.SKIP, found: "geen sessie" };
       return diagGet(itemsUrl).then(function (res) {
-        var arr = diagArr(res); shared.items = arr; shared.sampleItem = arr[0] || null;
+        var arr = diagArr(res); shared.items = arr;
         if (!arr.length) return { status: STAT.WARN, expected: "array met items", found: "0 items in weekvenster", next: "Kies een week met lesuren." };
-        var s = arr[0];
+        var s = lessonItems(arr)[0]; shared.sampleItem = s;
+        if (!s) return { status: STAT.WARN, expected: "lesuur-item", found: "enkel hele-dag/vakantie items — geen lesuur", next: "Kies een week met lesuren." };
         var missing = ["id", "title", "startdate", "enddate", "id_calendar", "is_editable", "has_attachments", "groups"].filter(function (k) { return !has(s, k); });
         var hasTime = /T\d{2}:\d{2}|[ ]\d{2}:\d{2}/.test(String(s.startdate || ""));
         if (!hasTime) return { status: STAT.FAIL, expected: "startdate met tijd (T HH:MM)", found: String(s.startdate), next: "Tijd-matrix + commit starttime-fallback breken → controleer timeFromISO/startdate." };
         if (missing.length) return { status: STAT.FAIL, expected: "velden id,title,startdate,…", found: "mist: " + missing.join(","), next: "Read-mapping in hydrateRange aanpassen." };
-        return { expected: "velden + tijd aanwezig", found: arr.length + " items, startdate ok" };
+        return { expected: "velden + tijd aanwezig", found: arr.length + " items, lesuur ok" };
       });
     }));
     checks.push(wrap("/cal/items/{id} (detail)", "read", function () {
       if (!shared.authed) return { status: STAT.SKIP, found: "geen sessie" };
-      var it = (shared.items || []).filter(function (x) { return x.has_attachments; })[0] || (shared.items || [])[0];
+      var less = lessonItems(shared.items);
+      var it = less.filter(function (x) { return x.has_attachments; })[0] || less[0] || (shared.items || [])[0];
       if (!it) return { status: STAT.SKIP, found: "geen item om te testen" };
       return diagGet(API + "/items/" + it.id + "?" + qs({ schoolId: ctx.schoolId })).then(function (res) {
         var d = (res.json && res.json.result) || res.json; shared.detail = d;
@@ -3073,6 +3098,10 @@
     }).then(function (r) {
       if (r === "__STOP__") return;               // logged-out screen shown; don't continue
       if (!ctx.schoolId) { showContextError(); return; }
+      // Open on the week the user is viewing in Questi (else today): seed weekOffset before the
+      // first reloadWeek so currentWeekRange() lands on it. Nav buttons work from this base.
+      var vs = detectViewedWeekStart(), todayMon = mondayOf(isoDate(new Date()));
+      if (vs && todayMon) view.weekOffset = Math.round((addDays(vs, 0) - addDays(todayMon, 0)) / 604800000);
       return loadEverything();
     }).catch(function (e) { console.error("[QWP] boot error:", e); setStatus("Laadfout — probeer 'Vernieuwen'."); });
   }
