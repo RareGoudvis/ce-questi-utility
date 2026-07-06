@@ -941,7 +941,6 @@
   }
 
   // ---------- Custom print: a branded, time-aligned week (own window) ----------
-  var PRINT_PX_PER_MIN = 0.85;   // row height ∝ slot duration (50′≈42px, 25′≈21px)
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
   function isLesuurPlaceholder(t) { return /^Lesuur\s*\d+$/i.test((t || "").trim()); }
   // ---- All print rendering runs on an explicit print-view (pv), never the global `view`,
@@ -958,11 +957,24 @@
       " – " + b.getDate() + " " + MONTH_NL[b.getMonth()] + " " + b.getFullYear();
   }
   function pad2(n) { return (n < 10 ? "0" : "") + n; }
-  // Full day + dd-mm-jjjj, e.g. "maandag 05-01-2026".
-  function fullDayDate(pv, offset) {
-    var d = addDays(pv.weekStart, offset); if (!d) return "";
-    return DAY_FULL_NL[(d.getDay() + 6) % 7] + " " + pad2(d.getDate()) + "-" + pad2(d.getMonth() + 1) + "-" + d.getFullYear();
+  // Day-header cell: full name on line 1, dd-mm-jjjj muted on line 2.
+  function dayHeadHtml(pv, offset) {
+    var d = addDays(pv.weekStart, offset); if (!d) return '<th class="pday"></th>';
+    var nm = DAY_FULL_NL[(d.getDay() + 6) % 7];
+    var dt = pad2(d.getDate()) + "-" + pad2(d.getMonth() + 1) + "-" + d.getFullYear();
+    return '<th class="pday">' + esc(nm) + '<span class="dd">' + dt + "</span></th>";
   }
+  function minToHHMM(m) { if (m == null || m < 0) m = 0; return pad2(Math.floor(m / 60)) + ":" + pad2(m % 60); }
+  // ISO-8601 week number of the Monday-start week containing dateStr.
+  function isoWeekNo(dateStr) {
+    var d = addDays(dateStr, 0); if (!d) return "";
+    var t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+    t.setUTCDate(t.getUTCDate() - ((t.getUTCDay() + 6) % 7) + 3);       // Thursday of this week
+    var firstThu = new Date(Date.UTC(t.getUTCFullYear(), 0, 4));
+    firstThu.setUTCDate(firstThu.getUTCDate() - ((firstThu.getUTCDay() + 6) % 7) + 3);
+    return 1 + Math.round((t - firstThu) / 604800000);
+  }
+  function todayDDMMYYYY() { var d = new Date(); return pad2(d.getDate()) + "-" + pad2(d.getMonth() + 1) + "-" + d.getFullYear(); }
   // Most common lesuur duration (minutes) → fallback for rows whose end time is unknown.
   function commonDurationMin(pv) {
     var counts = {}, best = 50, bestN = 0;
@@ -973,12 +985,7 @@
     });
     return best;
   }
-  function rowDurationMin(pv, t, fallback) {
-    var m = pv.rowMeta && pv.rowMeta[t];
-    if (m && m.end) { var dur = hhmmToMin(m.end) - hhmmToMin(m.start); if (dur > 0) return dur; }
-    return fallback;
-  }
-  // pv-based cell/thema lookups (mirror slotAt/weekThemaSlot/hasThemaKind/breakLabelAfter but on pv).
+  // pv-based cell/thema lookups (mirror slotAt/weekThemaSlot/hasThemaKind but on pv).
   function pvSlotAt(pv, weekIdx, dayIdx, time) {
     return pv.slots.filter(function (s) {
       return s.weekIdx === weekIdx && s.dayIdx === dayIdx && s.idCalendar !== "cal_holidays" &&
@@ -995,107 +1002,209 @@
     })[0] || null;
   }
   function pvHasThemaKind(pv, kind) { for (var w = 0; w < pv.weeks; w++) if (pvWeekThemaSlot(pv, w, kind)) return true; return false; }
-  function pvBreakLabelAfter(pv, idx) {
-    var rows = pv.timeRows; if (idx >= rows.length - 1) return null;
-    var meta = pv.rowMeta && pv.rowMeta[rows[idx]];
-    var end = hhmmToMin(meta && meta.end ? meta.end : rows[idx]), nextStart = hhmmToMin(rows[idx + 1]);
-    if (end == null || nextStart == null) return null;
-    var gap = nextStart - end; if (gap < 10) return null;
-    return gap >= 40 ? "middagpauze" : "speeltijd";
-  }
   // Single main title per cell: fiche title, else the item title unless it's a "Lesuur N"
-  // placeholder (then blank). vak label + colour come from the live tag.
-  function printCellParts(s) {
+  // placeholder (then blank). Colour precedence: the fiche's OWN tag colour (pv.ficheColor,
+  // built by buildFicheColors) → the slot's settings/vak top-tag colour → neutral.
+  function printCellParts(pv, s) {
     if (!s) return null;
     var thema = s.themaFiche || isThemaTitle(s.title);
     var main = thema ? "Zie themafiche."
       : (s.ficheTitle || (isLesuurPlaceholder(s.title) ? "" : (s.title || "")));
-    var vak = s.vak ? ((tagTitle("self", s.vak) || "").trim()) : "";
-    return { vak: vak, main: main, color: (s.vak ? (anyTagColor(s.vak) || "") : "") };
+    var top = topTagIdOf(s.vak);
+    var vak = top != null ? ((anyTagTitle(top) || "").trim()) : "";
+    var color = (pv && pv.ficheColor && s.ficheContentId && pv.ficheColor[s.ficheContentId]) ||
+      (top != null ? (anyTagColor(top) || "") : "");
+    return { vak: vak, main: main, color: color };
   }
-  function printCellHtml(s, extraHtml) {
+  function printCellHtml(pv, s, extraHtml) {
     var chips = extraHtml || "";
-    var p = printCellParts(s);
+    var p = printCellParts(pv, s);
     if (!p) return '<td class="pc">' + chips + "</td>";
-    var stripe = p.color ? (' style="border-left:4px solid ' + esc(p.color) + '"') : "";
-    var inner = (p.vak ? ('<div class="pc-vak">' + esc(p.vak) + "</div>") : "") +
-      (p.main ? ('<div class="pc-title">' + esc(p.main) + "</div>") : "");
+    var stripe = p.color ? (' style="box-shadow:inset 4px 0 0 ' + esc(p.color) + '"') : "";
+    var vakHtml = p.vak ? ('<div class="pc-vak"' + (p.color ? (' style="color:' + esc(p.color) + '"') : "") + ">" + esc(p.vak) + "</div>") : "";
+    var inner = vakHtml + (p.main ? ('<div class="pc-title">' + esc(p.main) + "</div>") : "");
     return '<td class="pc filled"' + stripe + ">" + inner + chips + "</td>";
   }
-  // extras: optional { "dayIdx|HH:MM": "<chips html>" } for other-calendar items (Feature 4);
-  // extrasBand: optional trailing HTML for all-day / unmatched extra items.
-  function printWeekTableHtml(pv, weekIdx, extras, extrasBand) {
-    extras = extras || {};
-    var fallback = commonDurationMin(pv);
-    var cols = "";
-    for (var d = 0; d < 5; d++) cols += '<th class="pday">' + esc(fullDayDate(pv, weekIdx * 7 + d)) + "</th>";
-    var head = '<tr><th class="ptime"></th>' + cols + "</tr>";
+  // ---- extras placement model ----
+  // Every selected other-agenda item is either COVERED (a lesson time-row's [start,end) contains
+  // its start → ⓘ pill inside that day cell) or UNCOVERED (no lesson at that time → its own
+  // injected time-row with the real time in the left column). All-day items pin to the day's
+  // first lesson row as a pill (no meaningful time → no own row).
+  // fetchPrintExtras returns { <week>: { cells:{"day|HH:MM":html}, inject:{"HH:MM":{end,days:{d:html}}} } }.
+  // Other-agenda chip: flat pill, leading coloured ⓘ (⇔ another agenda), optional muted clock time.
+  function extraChip(color, title, time) {
+    var tm = time ? (' <span class="pc-tm">' + esc(time) + "</span>") : "";
+    return '<span class="pc-extra"><span class="pc-ico" style="color:' + esc(color || "#888") + '">ⓘ</span>' + esc(title || "") + tm + "</span>";
+  }
+  // Merge a base row set with a week's injected rows → sorted effective rows + per-row meta.
+  function effectiveRows(pv, exWeek) {
+    var rows = pv.timeRows.slice(), meta = {}, injected = {};
+    pv.timeRows.forEach(function (t) { meta[t] = pv.rowMeta[t]; });
+    var inj = (exWeek && exWeek.inject) || {};
+    Object.keys(inj).forEach(function (k) {
+      if (rows.indexOf(k) === -1) { rows.push(k); meta[k] = { start: k, end: inj[k].end }; injected[k] = true; }
+    });
+    rows.sort();
+    return { rows: rows, meta: meta, injected: injected, inj: inj };
+  }
+  function rowDurEff(meta, t, fb) { var m = meta[t]; if (m && m.end) { var d = hhmmToMin(m.end) - hhmmToMin(t); if (d > 0) return d; } return fb; }
+  // Pauze/speeltijd gap between consecutive effective rows.
+  function breakAfterEff(er, idx) {
+    var rows = er.rows; if (idx >= rows.length - 1) return null;
+    var m = er.meta[rows[idx]];
+    var end = hhmmToMin(m && m.end ? m.end : rows[idx]), next = hhmmToMin(rows[idx + 1]);
+    if (end == null || next == null) return null;
+    var gap = next - end; if (gap < 10) return null;
+    return gap >= 40 ? "middagpauze" : "speeltijd";
+  }
+  // Fit-to-one-page: scale rows (weighted by duration) to fill the usable A4-landscape height minus
+  // fixed chrome (header, theme bands, break spacers, meta line, notes block). Clamped for sanity —
+  // toggling notes/date off frees budget so the blocks grow; on shrinks them, still one page.
+  var PRINT_PAGE_PX = 718;   // 210mm − 2×10mm margins @96dpi
+  function fitPxPerMin(er, nBands, nBreaks, opts) {
+    var fb = 50, totalMin = 0;
+    er.rows.forEach(function (t) { totalMin += rowDurEff(er.meta, t, fb); });
+    var chrome = 34 + nBands * 26 + nBreaks * 9 + 5 * (er.rows.length + nBands + nBreaks + 2) +
+      (opts.showMeta ? 22 : 0) + (opts.showNotes ? 104 : 0);
+    var ppm = (PRINT_PAGE_PX - chrome) / Math.max(30, totalMin);
+    return Math.max(0.6, Math.min(1.7, ppm));
+  }
+  // Slim right-aligned meta line (week no. + print date) — toggle.
+  function metaHtml(pv, weekIdx, opts) {
+    if (!opts.showMeta) return "";
+    var wk = isoWeekNo(isoDate(addDays(pv.weekStart, weekIdx * 7)));
+    return '<div class="pmeta"><span>Week <b>' + esc(wk) + "</b></span><span>afgedrukt <b>" + esc(todayDDMMYYYY()) + "</b></span></div>";
+  }
+  // Opmerking / notities under a divider — toggle; prints the typed text, else blank ruled lines.
+  function notesHtml(opts) {
+    if (!opts.showNotes) return "";
+    var txt = (opts.comment || "").trim();
+    var inner = txt ? ('<div class="pnote-txt">' + esc(txt) + "</div>") : '<div class="pnote-lines"></div>';
+    return '<div class="pfoot"><div class="pfoot-rule"></div><div class="pfoot-lbl">Opmerking / notities</div>' + inner + "</div>";
+  }
+  // Each week → .psheet-scale > .psheet (fixed one-page box) > .psheet-inner (JS-scaled to fit).
+  function printWeekTableHtml(pv, weekIdx, exWeek, opts) {
+    exWeek = exWeek || { cells: {}, inject: {} };
+    var cells = exWeek.cells || {};
+    var er = effectiveRows(pv, exWeek);
+    var fb = commonDurationMin(pv);
+    var nBands = 0; ["wo", "gd"].forEach(function (k) { if (pvHasThemaKind(pv, k)) nBands++; });
+    var nBreaks = 0; er.rows.forEach(function (t, idx) { if (breakAfterEff(er, idx)) nBreaks++; });
+    var ppm = fitPxPerMin(er, nBands, nBreaks, opts);
+    var head = '<tr><th class="ptime"></th>';
+    for (var d = 0; d < 5; d++) head += dayHeadHtml(pv, weekIdx * 7 + d);
+    head += "</tr>";
     var rows = "";
     // Compact full-width theme band(s) (WO / Godsdienst): no time label, no "hele dag" wording.
+    // Skip a band whose title is empty or a "Lesuur"-placeholder (a bare full-day filler item).
     ["wo", "gd"].forEach(function (kind) {
       if (!pvHasThemaKind(pv, kind)) return;
       var s = pvWeekThemaSlot(pv, weekIdx, kind);
-      var p = s ? printCellParts(s) : null;
+      var p = s ? printCellParts(pv, s) : null;
       var txt = p ? (p.main || p.vak || "") : "";
-      rows += '<tr class="pthemarow"><td class="pc pthema" colspan="6">' + (txt ? esc(txt) : "") + "</td></tr>";
+      if (!txt || isLesuurPlaceholder(txt)) return;
+      rows += '<tr class="pthemarow"><td class="pc pthema" colspan="6"><span class="pthema-k">' +
+        (kind === "gd" ? "Godsdienst" : "Thema") + "</span>" + esc(txt) + "</td></tr>";
     });
-    // Aligned lesuur rows — one per time-row, height ∝ duration so equal slots match.
-    pv.timeRows.forEach(function (t, idx) {
-      var m = pv.rowMeta && pv.rowMeta[t];
-      var endL = (m && m.end) ? m.end : "";
-      var hpx = Math.max(16, Math.round(rowDurationMin(pv, t, fallback) * PRINT_PX_PER_MIN));
+    er.rows.forEach(function (t, idx) {
+      var m = er.meta[t], endL = (m && m.end) ? m.end : "";
+      var hpx = Math.max(15, Math.round(rowDurEff(er.meta, t, fb) * ppm));
+      var isInj = er.injected[t];
       var timeCell = '<th class="ptime"><span class="pt-start">' + esc(t) + "</span>" +
         (endL ? ('<span class="pt-end">' + esc(endL) + "</span>") : "") + "</th>";
-      var cells = "";
-      for (var dd = 0; dd < 5; dd++) cells += printCellHtml(pvSlotAt(pv, weekIdx, dd, t), extras[dd + "|" + t] || "");
-      rows += '<tr style="height:' + hpx + 'px">' + timeCell + cells + "</tr>";
-      if (pvBreakLabelAfter(pv, idx)) rows += '<tr class="pbreak"><td colspan="6"></td></tr>';
+      var body = "";
+      for (var dd = 0; dd < 5; dd++) {
+        if (isInj) body += '<td class="pc xcell">' + ((er.inj[t] && er.inj[t].days[dd]) || "") + "</td>";
+        else body += printCellHtml(pv, pvSlotAt(pv, weekIdx, dd, t), cells[dd + "|" + t] || "");
+      }
+      rows += '<tr class="' + (isInj ? "xrow" : "lrow") + '" style="height:' + hpx + 'px">' + timeCell + body + "</tr>";
+      if (breakAfterEff(er, idx)) rows += '<tr class="pbreak"><td colspan="6"></td></tr>';
     });
-    if (extrasBand) rows += extrasBand;
-    return '<table class="pweek"><thead>' + head + "</thead><tbody>" + rows + "</tbody></table>";
+    // Empty week (holiday etc.): show a friendly state, not a bare grid of empty cells.
+    var tbody = rows ? ('<tbody>' + rows + '</tbody>') : "";
+    var empty = er.rows.length ? "" : '<div class="pempty">Geen lesitems deze week.</div>';
+    var inner = metaHtml(pv, weekIdx, opts) +
+      '<table class="pweek"><thead>' + head + "</thead>" + tbody + "</table>" +
+      empty + notesHtml(opts);
+    // .psheet-scale = screen-only fit-to-pane wrapper · .psheet = one fixed A4-landscape page
+    // (overflow-hidden) · .psheet-inner = content, JS-scaled to guarantee it fits the page.
+    return '<div class="psheet-scale"><div class="psheet"><div class="psheet-inner">' + inner + "</div></div></div>";
   }
   var PRINT_CSS =
     '@page { size: A4 landscape; margin: 10mm; }' +
     '* { box-sizing: border-box; }' +
-    'body { font: 11px/1.35 Arial, Helvetica, sans-serif; color: #1a2531; margin: 0; }' +
-    '.pweek { width: 100%; border-collapse: collapse; table-layout: fixed; page-break-after: always; }' +
-    '.pweek:last-of-type { page-break-after: auto; }' +
-    '.pweek th, .pweek td { border: 1px solid #b9c2c9; vertical-align: top; padding: 3px 5px; }' +
-    '.pweek thead th { background: #2f6d6b; color: #fff; text-align: center; font-size: 11px; padding: 6px 4px; }' +
-    'th.ptime { width: 74px; background: #f2f5f6; color: #566; font-size: 9.5px; font-weight: 600; text-align: left; vertical-align: top; white-space: nowrap; }' +
-    '.pweek thead th.ptime { background: #2f6d6b; color: #fff; }' +
-    '.ptime .pt-start { display: block; }' +
-    '.ptime .pt-end { display: block; color: #8a949b; font-weight: 400; }' +
-    'td.pc { }' +
-    'td.filled { border-left: 4px solid #c7ccd1; }' +
-    'tr.pthemarow td.pthema { background: #fbfbf4; padding: 2px 6px; font-size: 10px; font-weight: 600; }' +
-    'tr.pbreak td { border: none; height: 6px; padding: 0; background: #fff; }' +
-    '.pc-vak { font-size: 8.5px; text-transform: uppercase; letter-spacing: .03em; color: #55707a; }' +
-    '.pc-title { font-weight: 600; }' +
-    '.pc-extra { display: inline-block; font-size: 8.5px; margin-top: 2px; margin-right: 3px; padding: 1px 4px; border-radius: 3px; background: #f0f2f4; border-left: 3px solid #c7ccd1; }' +
-    '.pextra-band td { background: #fafbfb; font-size: 9px; padding: 3px 5px; }' +
-    '.pnote { border: 1px solid #b9c2c9; border-radius: 4px; padding: 8px 10px; margin: 8px 0 10px; page-break-inside: avoid; }' +
-    '.pnote-lbl { font-size: 9px; text-transform: uppercase; letter-spacing: .04em; color: #66727a; margin-bottom: 3px; }' +
-    '.pnote-txt { white-space: pre-wrap; }';
-  // Screen-only wrapper: shows each week as an A4-landscape "sheet" on a grey backdrop in the
-  // preview iframe. @media screen so printing the iframe ignores it and uses @page instead.
+    'body { font: 11.5px/1.4 "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #1e2a33; margin: 0; }' +
+    // One page = one .psheet, fixed to the A4-landscape printable area (277×190mm ≈ 1047×718px@96dpi).
+    // overflow:hidden + the JS scale on .psheet-inner mean content can never spill to a 2nd page.
+    '.psheet-scale { page-break-after: always; }' +
+    '.psheet-scale:last-child { page-break-after: auto; }' +
+    '.psheet { width: 1040px; height: 712px; overflow: hidden; background: #fff; }' +
+    '.psheet-inner { width: 1040px; transform-origin: top left; padding: 6px 2px; }' +
+    '.pempty { text-align: center; color: #93a0a7; font-size: 13px; padding: 60px 0; }' +
+    '.pmeta { display: flex; justify-content: flex-end; gap: 14px; font-size: 10px; color: #93a0a7; letter-spacing: .03em; margin: 0 2px 8px; }' +
+    '.pmeta b { color: #5c6b73; }' +
+    '.pweek { width: 100%; border-collapse: separate; border-spacing: 6px; table-layout: fixed; }' +
+    'th.ptime { width: 56px; background: transparent; border: none; text-align: left; vertical-align: top; padding: 6px 4px 0 0; white-space: nowrap; }' +
+    '.ptime .pt-start { display: block; font-weight: 700; font-size: 11px; color: #5c6b73; }' +
+    '.ptime .pt-end { display: block; font-size: 10px; color: #93a0a7; font-weight: 400; }' +
+    '.pweek thead th.pday { background: #2f6d6b; color: #fff; text-align: center; font-size: 11.5px; font-weight: 600; padding: 9px 6px; border-radius: 8px; }' +
+    '.pday .dd { display: block; font-weight: 400; font-size: 10px; opacity: .85; margin-top: 1px; }' +
+    'td.pc { background: #fbfcfc; border: 1px solid #dfe6ea; border-radius: 8px; vertical-align: top; padding: 8px 11px; }' +
+    'td.filled { background: #fff; border-color: #e3e9ec; padding-left: 12px; }' +
+    '.pc-vak { font-size: 8.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: #8a949b; }' +
+    '.pc-title { font-weight: 600; line-height: 1.3; color: #1e2a33; }' +
+    'tr.pthemarow td.pthema { background: #f4f3e8; color: #5a5836; border: 1px solid #e6e3c8; border-radius: 8px; padding: 9px 12px; font-size: 12px; font-weight: 700; }' +
+    '.pthema-k { font-weight: 800; text-transform: uppercase; font-size: 9.5px; letter-spacing: .08em; opacity: .7; margin-right: 8px; }' +
+    'tr.pbreak td { border: none; height: 7px; padding: 0; background: transparent; }' +
+    'tr.xrow td.xcell { background: repeating-linear-gradient(135deg,#fffaf0,#fffaf0 8px,#fff6e6 8px,#fff6e6 16px); border: 1px dashed #e7cf94; border-radius: 8px; }' +
+    'tr.xrow .pt-start { color: #b7891a; }' +
+    '.pc-extra { display: inline-flex; align-items: center; gap: 5px; font-size: 9.5px; font-weight: 600; background: #f3f5f6; border-radius: 999px; padding: 2px 9px 2px 7px; margin: 4px 5px 0 0; color: #3c4a52; }' +
+    '.pc-ico { font-size: 11px; line-height: 1; }' +
+    '.pc-tm { color: #8a949b; font-weight: 500; }' +
+    '.pfoot { margin-top: 12px; page-break-inside: avoid; }' +
+    '.pfoot-rule { border-top: 1px solid #d3dadf; margin: 0 2px 8px; }' +
+    '.pfoot-lbl { font-size: 9.5px; text-transform: uppercase; letter-spacing: .08em; color: #7a868d; font-weight: 700; margin: 0 2px 6px; }' +
+    '.pnote-txt { white-space: pre-wrap; }' +
+    '.pnote-lines { height: 60px; border-radius: 8px; border: 1px solid #e3e9ec; background-image: repeating-linear-gradient(#fff,#fff 21px,#e7edf0 21px,#e7edf0 22px); }';
+  // Screen-only: the fixed 1047px sheet is scaled to the preview pane via `zoom` (var --ss set by
+  // the fit script). @media screen so print ignores it and uses the true A4 page. The .psheet-inner
+  // transform (inline) applies in BOTH media — that's the one-page guarantee.
   var PRINT_SCREEN_CSS =
     '@media screen {' +
-    '  body { background: #e7ecee; padding: 16px; }' +
-    '  .pweek, .pnote { max-width: 1122px; margin: 0 auto 16px; background: #fff; box-shadow: 0 1px 6px rgba(0,0,0,.18); }' +
-    '  .pweek { page-break-after: auto; }' +
+    '  body { background: #e6eaec; padding: 20px; }' +
+    '  .psheet-scale { zoom: var(--ss, 1); margin: 0 auto 18px; width: 1040px; }' +
+    '  .psheet { border-radius: 12px; box-shadow: 0 4px 22px rgba(20,40,60,.16); }' +
     '}';
+  // One-page fit — run from the extension (isolated world) on the iframe's own DOM, NOT as an inline
+  // <script> in the doc (questi.com's CSP would block that). Measures each sheet's natural content
+  // height and shrinks .psheet-inner (scale ≤ 1) to the printable height; also scales the fixed sheet
+  // to the preview pane (screen only, via the --ss zoom var). Idempotent → safe to re-run on resize.
+  var PRINT_FIT_W = 1040, PRINT_FIT_H = 700;
+  var _printResize = null;   // window resize handler while the print overlay is open (removed on close)
+  function fitPrintDoc(doc, win) {
+    if (!doc) return;
+    var wr = doc.querySelectorAll(".psheet-scale"), j;
+    for (j = 0; j < wr.length; j++) wr[j].style.setProperty("--ss", 1);   // neutralise zoom before measuring
+    var inners = doc.querySelectorAll(".psheet-inner");
+    for (var i = 0; i < inners.length; i++) {
+      var el = inners[i];
+      el.style.width = PRINT_FIT_W + "px"; el.style.transform = "none";
+      var s = Math.min(1, PRINT_FIT_H / (el.scrollHeight || PRINT_FIT_H));
+      // Fit HEIGHT only, keep width full: widen the inner to W/s so the scaled width lands back at
+      // the full page width (a wider inner wraps shorter, so scaled height still stays ≤ budget).
+      if (s < 1) el.style.width = Math.round(PRINT_FIT_W / s) + "px";
+      el.style.transform = "scale(" + s + ")";
+    }
+    var vw = (win && win.innerWidth) || PRINT_FIT_W;
+    var vh = (win && win.innerHeight) || 800;
+    var ss = Math.min((vw - 72) / PRINT_FIT_W, (vh - 72) / 712);   // fill the pane with a little margin
+    for (j = 0; j < wr.length; j++) wr[j].style.setProperty("--ss", ss > 0 ? ss : 1);
+  }
   // Full print document HTML (used for BOTH the preview iframe and printing — one source).
   function printDocHtml(pv, extraByWeek, opts) {
     extraByWeek = extraByWeek || {};
-    var note = (opts.comment || "").trim();
-    var noteHtml = note ? ('<div class="pnote"><div class="pnote-lbl">Opmerking</div><div class="pnote-txt">' + esc(note) + "</div></div>") : "";
     var body = "";
-    for (var w = 0; w < pv.weeks; w++) {
-      var ex = extraByWeek[w] || { cells: {}, band: "" };
-      body += printWeekTableHtml(pv, w, ex.cells, ex.band);
-      if (w === pv.weeks - 1) body += noteHtml;
-    }
+    for (var w = 0; w < pv.weeks; w++) body += printWeekTableHtml(pv, w, extraByWeek[w] || { cells: {}, inject: {} }, opts);
     return "<!doctype html><html lang=\"nl\"><head><meta charset=\"utf-8\"><title>" +
       esc("Weekplanning " + weekTitleFor(pv, 0)) + "</title><style>" + PRINT_CSS + PRINT_SCREEN_CSS + "</style></head><body>" +
       body + "</body></html>";
@@ -1104,7 +1213,7 @@
   function extraPrintCalendars() {
     return (ctx.calendars || []).filter(function (c) { return c.id && String(c.id) !== String(ctx.calendarId) && c.id !== "cal_holidays"; });
   }
-  // Find the lesuur time-row whose [start,end) contains a given HH:MM; else null (→ Extra band).
+  // Find the lesuur time-row whose [start,end) contains a given HH:MM; else null (→ inject a row).
   function matchTimeRow(pv, startHHMM) {
     var mins = hhmmToMin(startHHMM); if (mins == null) return null;
     var fb = commonDurationMin(pv), found = null;
@@ -1116,25 +1225,14 @@
     });
     return found;
   }
-  function extraChip(color, title) {
-    return '<div class="pc-extra" style="border-left:3px solid ' + esc(color || "#888") + '">' + esc(title || "") + "</div>";
-  }
-  function buildExtraBand(items) {
-    if (!items || !items.length) return "";
-    var byDay = {};
-    items.forEach(function (it) { (byDay[it.day] = byDay[it.day] || []).push(it.html); });
-    var cells = "";
-    for (var d = 0; d < 5; d++) cells += '<td class="pc">' + (byDay[d] ? byDay[d].join("") : "") + "</td>";
-    return '<tr class="pextra-band"><th class="ptime">Extra</th>' + cells + "</tr>";
-  }
-  // Fetch the selected extra calendars for pv's range and bucket their items into per-week cell
-  // chips (timed, matched to a lesuur row) + a per-week "Extra" band (all-day / odd-time).
+  // Fetch the selected extra calendars for pv's range → per-week { cells, inject } (see model above).
   function fetchPrintExtras(pv, calIds) {
     if (!calIds || !calIds.length || !pv.weekStart) return Promise.resolve({});
     var startISO = pv.weekStart;
     var endD = addDays(pv.weekStart, 7 * pv.weeks - 1);
     var endISO = endD ? isoDate(endD) : pv.weekStart;
     var colorById = {}; (ctx.calendars || []).forEach(function (c) { colorById[c.id] = c.color || "#888"; });
+    var fb = commonDurationMin(pv);
     return apiItems(startISO, endISO, calIds).then(function (items) {
       var out = {}, base = addDays(pv.weekStart, 0);
       (items || []).forEach(function (it) {
@@ -1143,17 +1241,55 @@
         var d0 = addDays(String(it.startdate).slice(0, 10), 0);
         var wk = (d0 && base) ? Math.floor((d0 - base) / 86400000 / 7) : 0;
         if (wk < 0) wk = 0; if (wk >= pv.weeks) return;
-        var s = (out[wk] = out[wk] || { cells: {}, bandItems: [] });
-        var chip = extraChip(colorById[it.id_calendar], it.title);
-        if (it.is_fullday_item) { s.bandItems.push({ day: day, html: chip }); return; }
-        var t = matchTimeRow(pv, timeFromISO(it.startdate));
-        if (t == null) { s.bandItems.push({ day: day, html: chip }); return; }
-        var key = day + "|" + t; s.cells[key] = (s.cells[key] || "") + chip;
+        var w = (out[wk] = out[wk] || { cells: {}, inject: {} });
+        var color = colorById[it.id_calendar];
+        if (it.is_fullday_item) {
+          var t0 = pv.timeRows[0]; if (!t0) return;
+          var k0 = day + "|" + t0; w.cells[k0] = (w.cells[k0] || "") + extraChip(color, it.title, "");
+          return;
+        }
+        var startHHMM = timeFromISO(it.startdate);
+        var startMin = hhmmToMin(startHHMM); if (startMin == null) return;
+        var covered = matchTimeRow(pv, startHHMM);
+        if (covered != null) {
+          var k = day + "|" + covered; w.cells[k] = (w.cells[k] || "") + extraChip(color, it.title, startHHMM);
+        } else {
+          var endHHMM = timeFromISO(it.enddate) || minToHHMM(startMin + fb);
+          var rec = (w.inject[startHHMM] = w.inject[startHHMM] || { end: endHHMM, days: {} });
+          if (hhmmToMin(endHHMM) > hhmmToMin(rec.end)) rec.end = endHHMM;
+          rec.days[day] = (rec.days[day] || "") + extraChip(color, it.title, "");
+        }
       });
-      var res = {};
-      Object.keys(out).forEach(function (wk) { res[wk] = { cells: out[wk].cells, band: buildExtraBand(out[wk].bandItems) }; });
-      return res;
+      return out;
     }).catch(function () { return {}; });
+  }
+  // Resolve each printed fiche's OWN subject colour (its tag's set colour) → pv.ficheColor map.
+  // Own fiches via /lessons/{id}?return_format=edit → tags[]; colleague/method/gym → neutral.
+  var _ficheColorCache = {};   // contentId → "#hex" | "" (cached across nav to avoid refetch)
+  function ficheEditTags(id) {
+    return jget(API + "/lessons/" + id + "?" + qs({ schoolId: ctx.schoolId, return_format: "edit" }))
+      .then(function (j) { var r = (j && j.result) || j; return (r && r.tags) || []; }).catch(function () { return []; });
+  }
+  function colorFromTagList(tags) {
+    for (var i = 0; i < tags.length; i++) {
+      var t = tags[i], tid = (t && t.id != null) ? t.id : t;
+      var top = topTagIdOf(tid), c = top != null ? anyTagColor(top) : null;
+      if (c) return c;
+    }
+    return "";
+  }
+  function buildFicheColors(pv) {
+    var idset = {};
+    (pv.slots || []).forEach(function (s) {
+      if (!s.ficheContentId || s.isGym || s.themaFiche || isThemaTitle(s.title)) return;
+      idset[s.ficheContentId] = true;
+    });
+    function collect() { var m = {}; Object.keys(idset).forEach(function (id) { m[id] = _ficheColorCache[id] || ""; }); pv.ficheColor = m; return pv; }
+    var todo = Object.keys(idset).filter(function (id) { return !(id in _ficheColorCache); });
+    if (!todo.length) return Promise.resolve(collect());
+    return Promise.all(todo.map(function (id) {
+      return ficheEditTags(id).then(function (tags) { _ficheColorCache[id] = colorFromTagList(tags); });
+    })).then(collect);
   }
 
   // ---- Headless print plumbing (no planner overlay needed) ----
@@ -1188,17 +1324,22 @@
         s.weekIdx = (d0 && base) ? Math.max(0, Math.floor((d0 - base) / 86400000 / 7)) : 0;
       });
       var r = computeRowsFrom(slots);
-      return { slots: slots, weekStart: startISO, weeks: weeks, timeRows: r.timeRows, rowMeta: r.rowMeta, presence: r.presence };
+      var pv = { slots: slots, weekStart: startISO, weeks: weeks, timeRows: r.timeRows, rowMeta: r.rowMeta, presence: r.presence, ficheColor: {} };
+      return buildFicheColors(pv);   // resolve each fiche's own subject colour, then hand back pv
     });
   }
   // Ensure context + tag lists are available for a headless print (trimmed loadEverything).
+  // loadState() first so the teacher's per-timeslot vak map (state.settings) + week span are
+  // honoured headless — same as printing through the planner (where boot() loads state).
   function ensurePrintData() {
-    var p = ctx.ready ? Promise.resolve() : detectContext().then(function () {});
-    return p.then(function () {
-      if (!ctx.schoolId) throw new Error("no-context");
-      if (view.ownTags && view.ownTags.length) return;
-      return Promise.all([fetchTags(), fetchOwnTags(), fetchSharedTags()]).then(function (r) {
-        view.tags = r[0] || []; view.ownTags = r[1] || []; view.sharedTags = r[2] || [];
+    return loadState().then(function () {
+      var p = ctx.ready ? Promise.resolve() : detectContext().then(function () {});
+      return p.then(function () {
+        if (!ctx.schoolId) throw new Error("no-context");
+        if (view.ownTags && view.ownTags.length) return;
+        return Promise.all([fetchTags(), fetchOwnTags(), fetchSharedTags()]).then(function (r) {
+          view.tags = r[0] || []; view.ownTags = r[1] || []; view.sharedTags = r[2] || [];
+        });
       });
     });
   }
@@ -1234,20 +1375,28 @@
     var frame = h("iframe", { class: "qpp-frame", title: "Afdrukvoorbeeld" });
     var rangeLbl = h("span", { class: "qpp-range" });
     function setRangeLbl() { rangeLbl.textContent = weeks > 1 ? (weekTitleFor(curPv, 0) + "  /  " + weekTitleFor(curPv, 1)) : weekTitleFor(curPv, 0); }
-    // comment
+    // comment / notes
     var chk = h("input", { type: "checkbox" });
     var ta = h("textarea", { class: "qwp-textarea", rows: "3", placeholder: "bv. korte toelichting voor deze week…", disabled: "true" });
-    function opts() { return { comment: chk.checked ? (ta.value || "") : "" }; }
+    // week no. + print date
+    var metaChk = h("input", { type: "checkbox" });
+    function opts() { return { comment: chk.checked ? (ta.value || "") : "", showNotes: chk.checked, showMeta: metaChk.checked }; }
+    function fitFrame() { fitPrintDoc(frame.contentDocument, frame.contentWindow); }
     function renderPreview() {
       var doc = frame.contentDocument || (frame.contentWindow && frame.contentWindow.document); if (!doc) return;
       doc.open(); doc.write(printDocHtml(curPv, curExtras, opts())); doc.close();
+      // scale-to-fit after layout settles (two frames), so each week is exactly one page
+      requestAnimationFrame(function () { requestAnimationFrame(fitFrame); });
     }
+    _printResize = fitFrame;
+    window.addEventListener("resize", _printResize);
     function selectedCals() { return calBoxes.filter(function (b) { return b.cb.checked; }).map(function (b) { return b.id; }); }
     function refreshExtras() {
       fetchPrintExtras(curPv, selectedCals()).then(function (ex) { curExtras = ex; renderPreview(); });
     }
     chk.addEventListener("change", function () { ta.disabled = !chk.checked; renderPreview(); if (chk.checked) { try { ta.focus(); } catch (e) {} } });
     ta.addEventListener("input", renderPreview);
+    metaChk.addEventListener("change", renderPreview);
     function nav(delta) {
       var ns = isoDate(addDays(curStart, delta * 7 * weeks));
       fetchPrintView(ns, weeks).then(function (np) { curStart = ns; curPv = np; setRangeLbl(); refreshExtras(); });
@@ -1265,13 +1414,15 @@
       });
     }
     var side = h("div", { class: "qpp-side" }, [
-      h("div", { class: "qpp-side-lbl", text: "Opmerking" }),
-      h("label", { class: "qpp-check" }, [chk, h("span", { text: "Opmerking toevoegen" })]),
+      h("div", { class: "qpp-side-lbl", text: "Blad" }),
+      h("label", { class: "qpp-check" }, [metaChk, h("span", { text: "Weeknr. + afdrukdatum" })]),
+      h("div", { class: "qpp-side-lbl", text: "Opmerking / notities" }),
+      h("label", { class: "qpp-check" }, [chk, h("span", { text: "Notitieblok toevoegen" })]),
       ta
     ].concat(calSection).concat([
-      h("div", { class: "qpp-hint", text: "Liggend A4, één pagina per week. Gebruik ← → om een andere week te kiezen." })
+      h("div", { class: "qpp-hint", text: "Liggend A4, één pagina per week. Notitieblok uit? De blokken worden groter zodat de week de pagina vult. Gebruik ← → om een andere week te kiezen." })
     ]));
-    var doPrint = function () { try { frame.contentWindow.focus(); frame.contentWindow.print(); } catch (e) { printToast("Afdrukken mislukt.", true); } };
+    var doPrint = function () { try { fitFrame(); frame.contentWindow.focus(); frame.contentWindow.print(); } catch (e) { printToast("Afdrukken mislukt.", true); } };
     var header = h("div", { class: "qpp-header" }, [
       h("span", { class: "qpp-title", text: "Afdrukken" }),
       h("button", { class: "qpp-navbtn", title: "Vorige week", text: "←", onclick: function () { nav(-1); } }),
@@ -1291,6 +1442,7 @@
     refreshExtras(); // also renders the preview
   }
   function closePrintOverlay() {
+    if (_printResize) { window.removeEventListener("resize", _printResize); _printResize = null; }
     var o = document.getElementById("qwp-print-overlay"); if (o) o.remove();
     var planner = document.getElementById("qwp-overlay");
     if (!(planner && planner.classList.contains("qwp-show"))) document.documentElement.classList.remove("qwp-locked");
