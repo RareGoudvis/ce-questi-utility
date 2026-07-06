@@ -152,15 +152,20 @@ html.qwp-locked, html.qwp-locked body { overflow: hidden !important; }
 .qwp-gsearch-badge { font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:.03em; color:var(--muted); background:var(--line-soft); border-radius:999px; padding:2px 7px; white-space:nowrap; }
 .qwp-gsearch-msg { padding:9px 11px; font-size:12px; color:var(--faint); }
 
-/* Top bar: week nav (left) + global search (middle, grows) + close ✕ (right) */
-.qwp-topbar { display:flex; align-items:center; gap:12px; padding:8px 14px; background:var(--surface); border-bottom:1px solid var(--line); }
-.qwp-topbar .qwp-seg.qwp-topseg { flex:0 0 auto; width:150px; }
-.qwp-topbar .qwp-navrow { flex:0 0 auto; margin:0; }
+/* Top bar: sidebar toggle + week nav (left) + global search (middle, grows) + close ✕ (right) */
+.qwp-topbar { display:flex; align-items:center; gap:14px; padding:7px 14px; background:var(--surface); border-bottom:1px solid var(--line); }
+.qwp-topbar .qwp-navrow { flex:0 0 auto; margin:0; gap:8px; align-items:center; }
 .qwp-topbar .qwp-gsearch { flex:1; padding:0; border-bottom:none; background:transparent; }
 .qwp-topbar .qwp-gsearch-results { left:0; }
-.qwp-topx { flex:0 0 auto; width:34px; height:34px; border:1px solid var(--line); border-radius:var(--radius-sm); background:var(--surface); color:var(--muted); cursor:pointer; font-size:15px; }
+.qwp-topx { flex:0 0 auto; width:32px; height:32px; border:1px solid var(--line); border-radius:var(--radius-sm); background:var(--surface); color:var(--muted); cursor:pointer; font-size:15px; }
 .qwp-topx:hover { background:var(--accent-weak); color:var(--ink); }
-.qwp-navbtn { padding:7px 11px; }
+/* slim date-nav: compact square arrows, "Vandaag" as a normal ghost pill */
+.qwp-topbar .qwp-navbtn { padding:6px 12px; }
+.qwp-sidetoggle { flex:0 0 auto; padding:5px 10px; font-size:15px; line-height:1; }
+.qwp-navarrow { padding:5px 10px; font-size:15px; line-height:1; font-weight:700; }
+
+/* Sidebar collapse (toggle in the top bar; grid reflows via minmax(0,1fr)) */
+.qwp-main.qwp-side-collapsed .qwp-side { display:none; }
 
 /* Top navigation bar */
 .qwp-nav { display:flex; align-items:center; gap:8px; padding:10px 16px; background:var(--surface); border-bottom:1px solid var(--line); }
@@ -306,6 +311,38 @@ html.qwp-locked, html.qwp-locked body { overflow: hidden !important; }
 
 /* Generic modal (anchored to the fullscreen page) */
 .qwp-modal { position:absolute; inset:0; background:rgba(15,23,35,.42); display:flex; align-items:center; justify-content:center; z-index:30; }
+
+/* ---- Fullscreen print window (settings + live preview), own overlay like the planner ---- */
+#qwp-print-overlay {
+  --ink:#1f2733; --muted:#5b6470; --faint:#8b94a0;
+  --line:#e4e8ee; --line-soft:#eef1f5; --surface:#ffffff; --raised:#fbfcfe;
+  --accent:#304651; --accent-weak:#eaeef1; --danger:#f44336;
+  --radius:10px; --radius-sm:8px;
+  position:fixed; inset:0; z-index:2147483001; display:none;
+  background:#f4f6f8; color:var(--ink);
+  font-family: urw-din, q-urw-din, helvetica, "Segoe UI", Arial, sans-serif; -webkit-font-smoothing:antialiased;
+}
+#qwp-print-overlay.qwp-show { display:flex; flex-direction:column; }
+#qwp-print-overlay, #qwp-print-overlay * { box-sizing:border-box; }
+.qpp-header { display:flex; align-items:center; gap:14px; padding:10px 16px; background:var(--surface); border-bottom:1px solid var(--line); }
+.qpp-title { font-size:16px; font-weight:700; }
+.qpp-range { font-weight:600; font-variant-numeric:tabular-nums; }
+.qpp-navbtn { padding:5px 11px; font-size:15px; line-height:1; border:1px solid var(--line); border-radius:var(--radius-sm); background:var(--surface); color:var(--ink); cursor:pointer; }
+.qpp-navbtn:hover { background:var(--accent-weak); }
+.qpp-spacer { flex:1; }
+.qpp-print { padding:8px 18px; border:1px solid var(--accent); border-radius:var(--radius-sm); background:var(--accent); color:#fff; font-weight:700; cursor:pointer; }
+.qpp-x { width:34px; height:34px; border:1px solid var(--line); border-radius:var(--radius-sm); background:var(--surface); color:var(--muted); cursor:pointer; font-size:15px; }
+.qpp-x:hover { background:var(--accent-weak); color:var(--ink); }
+.qpp-main { flex:1; display:flex; min-height:0; }
+.qpp-side { width:250px; flex:0 0 250px; background:var(--surface); border-right:1px solid var(--line); padding:16px; overflow:auto; display:flex; flex-direction:column; gap:10px; }
+.qpp-side-lbl { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--faint); margin-top:6px; }
+.qpp-preview { flex:1; min-width:0; overflow:hidden; background:#e7ecee; }
+.qpp-frame { width:100%; height:100%; border:none; background:#e7ecee; }
+.qpp-check { display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer; }
+.qpp-cal-dot { width:12px; height:12px; border-radius:3px; flex:0 0 auto; }
+#qwp-print-overlay .qwp-textarea { width:100%; background:var(--raised); border:1px solid var(--line); border-radius:var(--radius-sm); padding:8px 10px; font:13px/1.5 inherit; color:var(--ink); resize:vertical; }
+#qwp-print-overlay .qwp-textarea:disabled { opacity:.5; }
+.qpp-hint { font-size:12px; color:var(--muted); }
 .qwp-modal-box { background:var(--surface); border-radius:12px; width:660px; max-width:92%; max-height:86vh; display:flex; flex-direction:column; box-shadow:var(--shadow); }
 .qwp-modal-box.wide { width:900px; }
 .qwp-modal-hd { font-weight:700; font-size:14px; padding:15px 18px; border-bottom:1px solid var(--line-soft); }
@@ -318,6 +355,12 @@ html.qwp-locked, html.qwp-locked body { overflow: hidden !important; }
 .qwp-field label { display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--faint); margin-bottom:5px; }
 .qwp-input { width:100%; background:var(--raised); border:1px solid var(--line); border-radius:var(--radius-sm); padding:8px 11px; font-size:13px; color:var(--ink); }
 .qwp-input:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-weak); }
+.qwp-textarea { width:100%; background:var(--raised); border:1px solid var(--line); border-radius:var(--radius-sm); padding:8px 11px; font:13px/1.5 inherit; color:var(--ink); resize:vertical; }
+.qwp-textarea:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-weak); }
+.qwp-textarea:disabled { opacity:.5; }
+.qwp-print-toggle { display:flex; align-items:center; gap:7px; font-size:13px; margin:4px 0 10px; cursor:pointer; }
+.qwp-print-cal { display:flex; align-items:center; gap:7px; font-size:13px; margin:5px 0 0; cursor:pointer; }
+.qwp-cal-dot { width:11px; height:11px; border-radius:3px; display:inline-block; flex:0 0 auto; }
 .qwp-check { display:flex; align-items:center; gap:8px; font-size:13px; }
 .qwp-check input { width:16px; height:16px; accent-color:var(--accent); }
 .qwp-results { max-height:240px; overflow:auto; border:1px solid var(--line); border-radius:var(--radius-sm); }
@@ -418,3 +461,14 @@ html.qwp-locked, html.qwp-locked body { overflow: hidden !important; }
 .qwp-rv-cell.rv-alert { background:#fdecea; border-color:#e6b4b0; border-left:3px solid var(--danger); }
 .qwp-rv-cell.rv-alert .qwp-cell-title { color:var(--danger); }
 .qwp-rv-cell.noschool { background:repeating-linear-gradient(135deg, var(--line-soft) 0 6px, transparent 6px 12px); }
+
+/* ---- Responsive: narrow screens ---- */
+@media (max-width: 820px) {
+  /* Two-row header: nav + toggle + ✕ on row 1, search full-width on row 2. */
+  .qwp-topbar { flex-wrap:wrap; gap:10px; }
+  .qwp-topbar .qwp-gsearch { order:10; flex-basis:100%; }
+  .qwp-topbar .qwp-gsearch-inp { max-width:none; }
+  /* Sidebar overlays instead of squeezing the grid when shown on small screens. */
+  .qwp-main .qwp-side { position:absolute; z-index:20; top:0; bottom:0; left:0; box-shadow:2px 0 12px rgba(0,0,0,.18); }
+  .qwp-main { position:relative; }
+}

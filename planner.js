@@ -30,7 +30,7 @@
   var ALL_FICHES_TAG = 8; // universal "Alle lesfiches" bucket (brief §3)
 
   // Runtime-detected context. Everything account/school/year-specific lives here.
-  var ctx = { schoolId: null, schoolyear: null, calendarId: null, groupId: null, ownerId: null, ownDefaultTagId: null, ready: false };
+  var ctx = { schoolId: null, schoolyear: null, calendarId: null, groupId: null, ownerId: null, ownDefaultTagId: null, ownerName: null, school: null, calendars: [], ready: false };
   function myId() { return ctx.ownerId != null ? ctx.ownerId : "self"; }
   function writeGroups() { return [{ groupId: ctx.groupId, schoolId: ctx.schoolId }]; }
 
@@ -76,7 +76,7 @@
   // ---------- Storage ----------
   var STORE_KEY = "qwp_state_v6";
   function mkPanel(vak, sort) { return { source: "self", sortDir: sort || "az", filterVak: vak || null, filterTagId: null, hideUsed: false, gradeFilter: null }; }
-  var state = { colleagues: [], settings: {}, weeks: 1, panelCount: 2, pickerView: "list", splitRatio: 0.58, manualSchoolId: null, manualSchoolyear: null, manualOwnTagId: null, saveThrottleMs: 250, panels: [mkPanel(null, "az"), mkPanel(null, "az"), mkPanel(null, "az")] };
+  var state = { colleagues: [], settings: {}, weeks: 1, panelCount: 2, pickerView: "list", splitRatio: 0.58, sideCollapsed: null, workingCalendarId: null, manualSchoolId: null, manualSchoolyear: null, manualOwnTagId: null, saveThrottleMs: 250, panels: [mkPanel(null, "az"), mkPanel(null, "az"), mkPanel(null, "az")] };
   function loadState() {
     return new Promise(function (res) {
       try {
@@ -99,6 +99,8 @@
     if (s.panelCount) state.panelCount = s.panelCount;
     if (s.pickerView) state.pickerView = s.pickerView;
     if (s.splitRatio) state.splitRatio = s.splitRatio;
+    if (s.sideCollapsed != null) state.sideCollapsed = s.sideCollapsed;
+    if (s.workingCalendarId != null) state.workingCalendarId = s.workingCalendarId;
     if (Array.isArray(s.panels) && s.panels.length) {
       state.panels = [0, 1, 2].map(function (i) { return Object.assign(mkPanel(), state.panels[i], s.panels[i] || {}); });
     }
@@ -286,7 +288,7 @@
   //   GET /api/schools    → result[].id = schoolId, .current_schoolyear = year
   //   GET /api/cal/calendars?schoolId → calendar ids for the calendars[] filter
   var API_ROOT = "/api";
-  function bootUsersMe() { return jget(API_ROOT + "/users/me").then(function (j) { var r = (j && j.result) || j; return r && (r.id != null ? r.id : null); }).catch(function () { return null; }); }
+  function bootUsersMe() { return jget(API_ROOT + "/users/me").then(function (j) { var r = (j && j.result) || j; if (r) { var nm = ((r.firstname || "") + " " + (r.lastname || "")).trim(); if (nm) ctx.ownerName = nm; } return r && (r.id != null ? r.id : null); }).catch(function () { return null; }); }
   function bootSchools() { return jget(API_ROOT + "/schools").then(function (j) { var r = (j && j.result) || []; return Array.isArray(r) ? r : []; }).catch(function () { return []; }); }
   function bootCalendars() { return jget(API + "/calendars?" + qs({ schoolId: ctx.schoolId })).then(function (j) { var r = (j && j.result) || []; return Array.isArray(r) ? r : []; }).catch(function () { return []; }); }
   function pickSchool(schools, preferId) {
@@ -306,7 +308,7 @@
       var me = r[0], schools = r[1];
       if (me != null) ctx.ownerId = me;
       var school = pickSchool(schools, hintSchoolId);
-      if (school) { ctx.schoolId = school.id; var sy = extractSchoolyear(school.current_schoolyear); if (sy) ctx.schoolyear = sy; console.log("[QWP] current_schoolyear raw:", school.current_schoolyear, "→", sy); }
+      if (school) { ctx.schoolId = school.id; ctx.school = { name: school.name || "", address: school.address || "", zip: school.zip || "", city: school.city || "" }; var sy = extractSchoolyear(school.current_schoolyear); if (sy) ctx.schoolyear = sy; console.log("[QWP] current_schoolyear raw:", school.current_schoolyear, "→", sy); }
       else if (hintSchoolId != null) ctx.schoolId = hintSchoolId;
       if (!ctx.schoolyear) ctx.schoolyear = net.schoolyear || scr.schoolyear || cook.schoolyear || state.manualSchoolyear || defaultSchoolyear();
       console.log("[QWP] bootstrap → users/me id:", me, "| schools:", schools.length, "chosen schoolId:", ctx.schoolId, "schoolyear:", ctx.schoolyear);
@@ -315,6 +317,10 @@
     }).then(function (cals) {
       if (!cals) return null;
       var ids = cals.map(calIdOf).filter(function (x) { return x && x !== "cal_holidays"; });
+      // Retain full calendar objects (id + name + colour) for the print picker (Feature 4) and the
+      // working-calendar picker (Feature 5). Field names are best-effort — read defensively.
+      ctx.calendars = (cals || []).map(function (c) { return { id: calIdOf(c), name: c.name || c.title || String(calIdOf(c)), color: c.color || c.colour || c.hex || null }; })
+        .filter(function (c) { return c.id && c.id !== "cal_holidays"; });
       console.log("[QWP] /cal/calendars →", ids);
       if (!ctx.calendarId && ids.length) ctx.calendarId = ids[0];
       var wr = thisWeekRange();
@@ -323,6 +329,12 @@
     }).then(function (items) {
       if (items == null) return;
       deriveFromItems(items || []);
+      // Feature 5: an explicit working-calendar pick overrides the busiest-calendar heuristic —
+      // makes the tool portable (multiple own calendars / colleague calendars), not name-dependent.
+      if (state.workingCalendarId != null && (ctx.calendars || []).some(function (c) { return String(c.id) === String(state.workingCalendarId); })) {
+        ctx.calendarId = state.workingCalendarId;
+        console.log("[QWP] working calendar override →", ctx.calendarId);
+      }
       console.log("[QWP] derived from " + ((items || []).length) + " agenda items →", { schoolId: ctx.schoolId, calendarId: ctx.calendarId, groupId: ctx.groupId });
       // List items carry empty groups; the real group id lives in item DETAIL. If not
       // yet known, fetch one editable item's detail to resolve it (writes need it).
@@ -497,6 +509,9 @@
   function fetchTags() { if (_tagsCache) return Promise.resolve(_tagsCache); return jget(API + "/lessons/tags?" + qs({ schoolId: ctx.schoolId })).then(function (j) { _tagsCache = (j && j.result) || []; return _tagsCache; }); }
   // filter=own → the user's own tag hierarchy (small, clean); filter=shared → colleagues' tags.
   function fetchOwnTags() { if (_ownTagsCache) return Promise.resolve(_ownTagsCache); return jget(API + "/lessons/tags?" + qs({ schoolId: ctx.schoolId, filter: "own" })).then(function (j) { _ownTagsCache = (j && j.result) || []; return _ownTagsCache; }).catch(function () { return []; }); }
+  // Drop the cached own-tag list so the next fetchOwnTags() re-reads from the server. Called
+  // after the Lesfiche-manager creates/deletes a tag, so planner + manager don't show stale tags.
+  function invalidateOwnTags() { _ownTagsCache = null; }
   function fetchSharedTags() { if (_sharedTagsCache) return Promise.resolve(_sharedTagsCache); return jget(API + "/lessons/tags?" + qs({ schoolId: ctx.schoolId, filter: "shared", active_users: true })).then(function (j) { _sharedTagsCache = (j && j.result) || []; return _sharedTagsCache; }).catch(function () { return []; }); }
   var SYSTEM_TAG_IDS = { 1: true, 2: true }; // "zonder tag" + "samenwerk" — hide from vak pills (keep 5 = Alle).
   function isTopLevel(t) { return t && (t.parent == null || t.parent === 0); }
@@ -761,6 +776,13 @@
         h("div", { class: "qwp-balance", id: "qwp-balance" })
       ]),
       h("div", { class: "qwp-side-grp" }, [
+        h("div", { class: "qwp-side-lbl", text: "Weekweergave" }),
+        h("div", { class: "qwp-seg", id: "qwp-weekseg" }, [
+          h("button", { "data-w": "1", onclick: function () { setWeeks(1); }, text: "1 week" }),
+          h("button", { "data-w": "2", onclick: function () { setWeeks(2); }, text: "2 weken" })
+        ])
+      ]),
+      h("div", { class: "qwp-side-grp" }, [
         h("div", { class: "qwp-side-lbl", text: "Filterpanelen" }),
         h("div", { class: "qwp-seg", id: "qwp-panelseg" }, [
           h("button", { "data-p": "1", onclick: function () { setPanelCount(1); }, text: "1" }),
@@ -799,14 +821,11 @@
 
     var content = h("div", { class: "qwp-content" }, [
       h("div", { class: "qwp-topbar" }, [
-        h("div", { class: "qwp-seg qwp-topseg", id: "qwp-weekseg" }, [
-          h("button", { "data-w": "1", onclick: function () { setWeeks(1); }, text: "1 week" }),
-          h("button", { "data-w": "2", onclick: function () { setWeeks(2); }, text: "2 weken" })
-        ]),
+        h("button", { class: "qwp-btn qwp-ghost qwp-sidetoggle", id: "qwp-sidetoggle", onclick: toggleSide, title: "Zijbalk tonen/verbergen", text: "☰" }),
         h("div", { class: "qwp-navrow" }, [
-          h("button", { class: "qwp-btn qwp-ghost qwp-navbtn", onclick: prevWeek, title: "Vorige week", text: "←" }),
-          h("button", { class: "qwp-btn qwp-ghost qwp-navbtn", onclick: thisWeek, title: "Deze week", text: "Deze week" }),
-          h("button", { class: "qwp-btn qwp-ghost qwp-navbtn", onclick: nextWeek, title: "Volgende week", text: "→" })
+          h("button", { class: "qwp-btn qwp-ghost qwp-navarrow", onclick: prevWeek, title: "Vorige week", text: "←" }),
+          h("button", { class: "qwp-btn qwp-ghost qwp-navbtn", onclick: thisWeek, title: "Deze week", text: "Vandaag" }),
+          h("button", { class: "qwp-btn qwp-ghost qwp-navarrow", onclick: nextWeek, title: "Volgende week", text: "→" })
         ]),
         buildGlobalSearch(),
         h("button", { class: "qwp-topx", onclick: hide, title: "Sluiten", text: "✕" })
@@ -891,6 +910,18 @@
     };
   }
   function setWeeks(n) { state.weeks = n; view.weeks = n; saveState(); syncWeekSeg(); reloadAndRender(); }
+  // Sidebar collapse. state.sideCollapsed: true/false explicit pref, null = follow the
+  // responsive default (auto-collapsed under the breakpoint on first open).
+  var SIDE_BP = "(max-width: 820px)";
+  function sideIsCollapsed() {
+    if (state.sideCollapsed === true || state.sideCollapsed === false) return state.sideCollapsed;
+    try { return window.matchMedia(SIDE_BP).matches; } catch (e) { return false; }
+  }
+  function applySideCollapse() {
+    var main = els.root && els.root.querySelector(".qwp-main"); if (!main) return;
+    main.classList.toggle("qwp-side-collapsed", sideIsCollapsed());
+  }
+  function toggleSide() { state.sideCollapsed = !sideIsCollapsed(); saveState(); applySideCollapse(); }
   function syncWeekSeg() { var seg = elId("qwp-weekseg"); if (!seg) return; Array.prototype.forEach.call(seg.querySelectorAll("button"), function (b) { b.classList.toggle("active", String(view.weeks) === b.getAttribute("data-w")); }); }
   function setPanelCount(n) { state.panelCount = n; saveState(); syncSegs(); renderAllPanels(); }
   function setPickerView(v) { state.pickerView = v; saveState(); syncSegs(); for (var i = 0; i < visiblePanelCount(); i++) renderPickList(i); }
@@ -909,31 +940,369 @@
     el.textContent = "Ma " + ddmm(view.weekStart, 0) + " – Vr " + ddmm(view.weekStart, lastFri) + (view.weekOffset ? (" (" + (view.weekOffset > 0 ? "+" : "") + view.weekOffset + " wk)") : "");
   }
 
+  // ---------- Custom print: a branded, time-aligned week (own window) ----------
+  var PRINT_PX_PER_MIN = 0.85;   // row height ∝ slot duration (50′≈42px, 25′≈21px)
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+  function isLesuurPlaceholder(t) { return /^Lesuur\s*\d+$/i.test((t || "").trim()); }
+  // ---- All print rendering runs on an explicit print-view (pv), never the global `view`,
+  //      so print works headless (no planner overlay) and never disturbs the live grid.
+  //      pv = { slots, weekStart, weeks, timeRows, rowMeta, presence }.
+  // "5 – 9 januari 2026" — used for the window/tab title + the dialog range label.
+  function weekTitleFor(pv, weekIdx) {
+    var a = addDays(pv.weekStart, weekIdx * 7), b = addDays(pv.weekStart, weekIdx * 7 + 4);
+    if (!a || !b) return "";
+    var sameM = a.getMonth() === b.getMonth() && a.getFullYear() === b.getFullYear();
+    if (sameM) return a.getDate() + " – " + b.getDate() + " " + MONTH_NL[b.getMonth()] + " " + b.getFullYear();
+    var sameY = a.getFullYear() === b.getFullYear();
+    return a.getDate() + " " + MONTH_NL[a.getMonth()] + (sameY ? "" : (" " + a.getFullYear())) +
+      " – " + b.getDate() + " " + MONTH_NL[b.getMonth()] + " " + b.getFullYear();
+  }
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+  // Full day + dd-mm-jjjj, e.g. "maandag 05-01-2026".
+  function fullDayDate(pv, offset) {
+    var d = addDays(pv.weekStart, offset); if (!d) return "";
+    return DAY_FULL_NL[(d.getDay() + 6) % 7] + " " + pad2(d.getDate()) + "-" + pad2(d.getMonth() + 1) + "-" + d.getFullYear();
+  }
+  // Most common lesuur duration (minutes) → fallback for rows whose end time is unknown.
+  function commonDurationMin(pv) {
+    var counts = {}, best = 50, bestN = 0;
+    pv.timeRows.forEach(function (t) {
+      var m = pv.rowMeta && pv.rowMeta[t]; if (!m || !m.end) return;
+      var dur = hhmmToMin(m.end) - hhmmToMin(m.start);
+      if (dur > 0) { counts[dur] = (counts[dur] || 0) + 1; if (counts[dur] > bestN) { bestN = counts[dur]; best = dur; } }
+    });
+    return best;
+  }
+  function rowDurationMin(pv, t, fallback) {
+    var m = pv.rowMeta && pv.rowMeta[t];
+    if (m && m.end) { var dur = hhmmToMin(m.end) - hhmmToMin(m.start); if (dur > 0) return dur; }
+    return fallback;
+  }
+  // pv-based cell/thema lookups (mirror slotAt/weekThemaSlot/hasThemaKind/breakLabelAfter but on pv).
+  function pvSlotAt(pv, weekIdx, dayIdx, time) {
+    return pv.slots.filter(function (s) {
+      return s.weekIdx === weekIdx && s.dayIdx === dayIdx && s.idCalendar !== "cal_holidays" &&
+        !(s.isFullday || isThemaTitle(s.title) || s.themaFiche) &&
+        (s.time || (s.starttime ? String(s.starttime).slice(0, 5) : "")) === time;
+    })[0] || null;
+  }
+  function pvWeekThemaSlot(pv, weekIdx, kind) {
+    return pv.slots.filter(function (s) {
+      if (s.weekIdx !== weekIdx || s.idCalendar === "cal_holidays") return false;
+      if (!s.isFullday) return false;
+      var gd = GD_RE.test(s.title || "");
+      return kind === "gd" ? gd : !gd;
+    })[0] || null;
+  }
+  function pvHasThemaKind(pv, kind) { for (var w = 0; w < pv.weeks; w++) if (pvWeekThemaSlot(pv, w, kind)) return true; return false; }
+  function pvBreakLabelAfter(pv, idx) {
+    var rows = pv.timeRows; if (idx >= rows.length - 1) return null;
+    var meta = pv.rowMeta && pv.rowMeta[rows[idx]];
+    var end = hhmmToMin(meta && meta.end ? meta.end : rows[idx]), nextStart = hhmmToMin(rows[idx + 1]);
+    if (end == null || nextStart == null) return null;
+    var gap = nextStart - end; if (gap < 10) return null;
+    return gap >= 40 ? "middagpauze" : "speeltijd";
+  }
+  // Single main title per cell: fiche title, else the item title unless it's a "Lesuur N"
+  // placeholder (then blank). vak label + colour come from the live tag.
+  function printCellParts(s) {
+    if (!s) return null;
+    var thema = s.themaFiche || isThemaTitle(s.title);
+    var main = thema ? "Zie themafiche."
+      : (s.ficheTitle || (isLesuurPlaceholder(s.title) ? "" : (s.title || "")));
+    var vak = s.vak ? ((tagTitle("self", s.vak) || "").trim()) : "";
+    return { vak: vak, main: main, color: (s.vak ? (anyTagColor(s.vak) || "") : "") };
+  }
+  function printCellHtml(s, extraHtml) {
+    var chips = extraHtml || "";
+    var p = printCellParts(s);
+    if (!p) return '<td class="pc">' + chips + "</td>";
+    var stripe = p.color ? (' style="border-left:4px solid ' + esc(p.color) + '"') : "";
+    var inner = (p.vak ? ('<div class="pc-vak">' + esc(p.vak) + "</div>") : "") +
+      (p.main ? ('<div class="pc-title">' + esc(p.main) + "</div>") : "");
+    return '<td class="pc filled"' + stripe + ">" + inner + chips + "</td>";
+  }
+  // extras: optional { "dayIdx|HH:MM": "<chips html>" } for other-calendar items (Feature 4);
+  // extrasBand: optional trailing HTML for all-day / unmatched extra items.
+  function printWeekTableHtml(pv, weekIdx, extras, extrasBand) {
+    extras = extras || {};
+    var fallback = commonDurationMin(pv);
+    var cols = "";
+    for (var d = 0; d < 5; d++) cols += '<th class="pday">' + esc(fullDayDate(pv, weekIdx * 7 + d)) + "</th>";
+    var head = '<tr><th class="ptime"></th>' + cols + "</tr>";
+    var rows = "";
+    // Compact full-width theme band(s) (WO / Godsdienst): no time label, no "hele dag" wording.
+    ["wo", "gd"].forEach(function (kind) {
+      if (!pvHasThemaKind(pv, kind)) return;
+      var s = pvWeekThemaSlot(pv, weekIdx, kind);
+      var p = s ? printCellParts(s) : null;
+      var txt = p ? (p.main || p.vak || "") : "";
+      rows += '<tr class="pthemarow"><td class="pc pthema" colspan="6">' + (txt ? esc(txt) : "") + "</td></tr>";
+    });
+    // Aligned lesuur rows — one per time-row, height ∝ duration so equal slots match.
+    pv.timeRows.forEach(function (t, idx) {
+      var m = pv.rowMeta && pv.rowMeta[t];
+      var endL = (m && m.end) ? m.end : "";
+      var hpx = Math.max(16, Math.round(rowDurationMin(pv, t, fallback) * PRINT_PX_PER_MIN));
+      var timeCell = '<th class="ptime"><span class="pt-start">' + esc(t) + "</span>" +
+        (endL ? ('<span class="pt-end">' + esc(endL) + "</span>") : "") + "</th>";
+      var cells = "";
+      for (var dd = 0; dd < 5; dd++) cells += printCellHtml(pvSlotAt(pv, weekIdx, dd, t), extras[dd + "|" + t] || "");
+      rows += '<tr style="height:' + hpx + 'px">' + timeCell + cells + "</tr>";
+      if (pvBreakLabelAfter(pv, idx)) rows += '<tr class="pbreak"><td colspan="6"></td></tr>';
+    });
+    if (extrasBand) rows += extrasBand;
+    return '<table class="pweek"><thead>' + head + "</thead><tbody>" + rows + "</tbody></table>";
+  }
+  var PRINT_CSS =
+    '@page { size: A4 landscape; margin: 10mm; }' +
+    '* { box-sizing: border-box; }' +
+    'body { font: 11px/1.35 Arial, Helvetica, sans-serif; color: #1a2531; margin: 0; }' +
+    '.pweek { width: 100%; border-collapse: collapse; table-layout: fixed; page-break-after: always; }' +
+    '.pweek:last-of-type { page-break-after: auto; }' +
+    '.pweek th, .pweek td { border: 1px solid #b9c2c9; vertical-align: top; padding: 3px 5px; }' +
+    '.pweek thead th { background: #2f6d6b; color: #fff; text-align: center; font-size: 11px; padding: 6px 4px; }' +
+    'th.ptime { width: 74px; background: #f2f5f6; color: #566; font-size: 9.5px; font-weight: 600; text-align: left; vertical-align: top; white-space: nowrap; }' +
+    '.pweek thead th.ptime { background: #2f6d6b; color: #fff; }' +
+    '.ptime .pt-start { display: block; }' +
+    '.ptime .pt-end { display: block; color: #8a949b; font-weight: 400; }' +
+    'td.pc { }' +
+    'td.filled { border-left: 4px solid #c7ccd1; }' +
+    'tr.pthemarow td.pthema { background: #fbfbf4; padding: 2px 6px; font-size: 10px; font-weight: 600; }' +
+    'tr.pbreak td { border: none; height: 6px; padding: 0; background: #fff; }' +
+    '.pc-vak { font-size: 8.5px; text-transform: uppercase; letter-spacing: .03em; color: #55707a; }' +
+    '.pc-title { font-weight: 600; }' +
+    '.pc-extra { display: inline-block; font-size: 8.5px; margin-top: 2px; margin-right: 3px; padding: 1px 4px; border-radius: 3px; background: #f0f2f4; border-left: 3px solid #c7ccd1; }' +
+    '.pextra-band td { background: #fafbfb; font-size: 9px; padding: 3px 5px; }' +
+    '.pnote { border: 1px solid #b9c2c9; border-radius: 4px; padding: 8px 10px; margin: 8px 0 10px; page-break-inside: avoid; }' +
+    '.pnote-lbl { font-size: 9px; text-transform: uppercase; letter-spacing: .04em; color: #66727a; margin-bottom: 3px; }' +
+    '.pnote-txt { white-space: pre-wrap; }';
+  // Screen-only wrapper: shows each week as an A4-landscape "sheet" on a grey backdrop in the
+  // preview iframe. @media screen so printing the iframe ignores it and uses @page instead.
+  var PRINT_SCREEN_CSS =
+    '@media screen {' +
+    '  body { background: #e7ecee; padding: 16px; }' +
+    '  .pweek, .pnote { max-width: 1122px; margin: 0 auto 16px; background: #fff; box-shadow: 0 1px 6px rgba(0,0,0,.18); }' +
+    '  .pweek { page-break-after: auto; }' +
+    '}';
+  // Full print document HTML (used for BOTH the preview iframe and printing — one source).
+  function printDocHtml(pv, extraByWeek, opts) {
+    extraByWeek = extraByWeek || {};
+    var note = (opts.comment || "").trim();
+    var noteHtml = note ? ('<div class="pnote"><div class="pnote-lbl">Opmerking</div><div class="pnote-txt">' + esc(note) + "</div></div>") : "";
+    var body = "";
+    for (var w = 0; w < pv.weeks; w++) {
+      var ex = extraByWeek[w] || { cells: {}, band: "" };
+      body += printWeekTableHtml(pv, w, ex.cells, ex.band);
+      if (w === pv.weeks - 1) body += noteHtml;
+    }
+    return "<!doctype html><html lang=\"nl\"><head><meta charset=\"utf-8\"><title>" +
+      esc("Weekplanning " + weekTitleFor(pv, 0)) + "</title><style>" + PRINT_CSS + PRINT_SCREEN_CSS + "</style></head><body>" +
+      body + "</body></html>";
+  }
+  // Extra calendars for print (Feature 4). Own calendars minus the primary lesson calendar.
+  function extraPrintCalendars() {
+    return (ctx.calendars || []).filter(function (c) { return c.id && String(c.id) !== String(ctx.calendarId) && c.id !== "cal_holidays"; });
+  }
+  // Find the lesuur time-row whose [start,end) contains a given HH:MM; else null (→ Extra band).
+  function matchTimeRow(pv, startHHMM) {
+    var mins = hhmmToMin(startHHMM); if (mins == null) return null;
+    var fb = commonDurationMin(pv), found = null;
+    pv.timeRows.forEach(function (t) {
+      if (found != null) return;
+      var s = hhmmToMin(t), m = pv.rowMeta && pv.rowMeta[t];
+      var e = (m && m.end) ? hhmmToMin(m.end) : (s + fb);
+      if (mins >= s && mins < e) found = t;
+    });
+    return found;
+  }
+  function extraChip(color, title) {
+    return '<div class="pc-extra" style="border-left:3px solid ' + esc(color || "#888") + '">' + esc(title || "") + "</div>";
+  }
+  function buildExtraBand(items) {
+    if (!items || !items.length) return "";
+    var byDay = {};
+    items.forEach(function (it) { (byDay[it.day] = byDay[it.day] || []).push(it.html); });
+    var cells = "";
+    for (var d = 0; d < 5; d++) cells += '<td class="pc">' + (byDay[d] ? byDay[d].join("") : "") + "</td>";
+    return '<tr class="pextra-band"><th class="ptime">Extra</th>' + cells + "</tr>";
+  }
+  // Fetch the selected extra calendars for pv's range and bucket their items into per-week cell
+  // chips (timed, matched to a lesuur row) + a per-week "Extra" band (all-day / odd-time).
+  function fetchPrintExtras(pv, calIds) {
+    if (!calIds || !calIds.length || !pv.weekStart) return Promise.resolve({});
+    var startISO = pv.weekStart;
+    var endD = addDays(pv.weekStart, 7 * pv.weeks - 1);
+    var endISO = endD ? isoDate(endD) : pv.weekStart;
+    var colorById = {}; (ctx.calendars || []).forEach(function (c) { colorById[c.id] = c.color || "#888"; });
+    return apiItems(startISO, endISO, calIds).then(function (items) {
+      var out = {}, base = addDays(pv.weekStart, 0);
+      (items || []).forEach(function (it) {
+        if (!it || it.id_calendar === "cal_holidays") return;
+        var day = weekdayIdx(it.startdate); if (day < 0 || day > 4) return;
+        var d0 = addDays(String(it.startdate).slice(0, 10), 0);
+        var wk = (d0 && base) ? Math.floor((d0 - base) / 86400000 / 7) : 0;
+        if (wk < 0) wk = 0; if (wk >= pv.weeks) return;
+        var s = (out[wk] = out[wk] || { cells: {}, bandItems: [] });
+        var chip = extraChip(colorById[it.id_calendar], it.title);
+        if (it.is_fullday_item) { s.bandItems.push({ day: day, html: chip }); return; }
+        var t = matchTimeRow(pv, timeFromISO(it.startdate));
+        if (t == null) { s.bandItems.push({ day: day, html: chip }); return; }
+        var key = day + "|" + t; s.cells[key] = (s.cells[key] || "") + chip;
+      });
+      var res = {};
+      Object.keys(out).forEach(function (wk) { res[wk] = { cells: out[wk].cells, band: buildExtraBand(out[wk].bandItems) }; });
+      return res;
+    }).catch(function () { return {}; });
+  }
+
+  // ---- Headless print plumbing (no planner overlay needed) ----
+  // Pure row computation — shared by the on-screen grid (computeTimeRows) and headless print.
+  function computeRowsFrom(slots) {
+    var set = {}, endAt = {}, presence = {};
+    (slots || []).forEach(function (s) {
+      if (s.idCalendar === "cal_holidays") return;
+      if (s.isFullday || isThemaTitle(s.title) || s.themaFiche) return;
+      var t = s.time || (s.starttime ? String(s.starttime).slice(0, 5) : "");
+      if (!t) return;
+      set[t] = true; presence[s.dayIdx + "|" + t] = true;
+      var e = (s.endtime ? String(s.endtime).slice(0, 5) : timeFromISO(s.enddate));
+      if (e) { (endAt[t] = endAt[t] || {}); endAt[t][e] = (endAt[t][e] || 0) + 1; }
+    });
+    var timeRows = Object.keys(set).sort(), rowMeta = {};
+    timeRows.forEach(function (t) {
+      var best = null, bestN = 0, m = endAt[t] || {};
+      Object.keys(m).forEach(function (e) { if (m[e] > bestN) { bestN = m[e]; best = e; } });
+      rowMeta[t] = { start: t, end: best };
+    });
+    return { timeRows: timeRows, rowMeta: rowMeta, presence: presence };
+  }
+  // Fetch a week's slots (items + fiche details) into a standalone pv — never touches `view`.
+  function fetchPrintView(startISO, weeks) {
+    var endD = addDays(startISO, 7 * weeks - 1), endISO = endD ? isoDate(endD) : startISO;
+    return hydrateRange(startISO, endISO).then(function (slots) {
+      // hydrateRange computes weekIdx against view.weekStart; recompute against our own start.
+      var base = addDays(startISO, 0);
+      (slots || []).forEach(function (s) {
+        var d0 = addDays(String(s.startdate).slice(0, 10), 0);
+        s.weekIdx = (d0 && base) ? Math.max(0, Math.floor((d0 - base) / 86400000 / 7)) : 0;
+      });
+      var r = computeRowsFrom(slots);
+      return { slots: slots, weekStart: startISO, weeks: weeks, timeRows: r.timeRows, rowMeta: r.rowMeta, presence: r.presence };
+    });
+  }
+  // Ensure context + tag lists are available for a headless print (trimmed loadEverything).
+  function ensurePrintData() {
+    var p = ctx.ready ? Promise.resolve() : detectContext().then(function () {});
+    return p.then(function () {
+      if (!ctx.schoolId) throw new Error("no-context");
+      if (view.ownTags && view.ownTags.length) return;
+      return Promise.all([fetchTags(), fetchOwnTags(), fetchSharedTags()]).then(function (r) {
+        view.tags = r[0] || []; view.ownTags = r[1] || []; view.sharedTags = r[2] || [];
+      });
+    });
+  }
+  // Lightweight floating toast (the planner status line is hidden when the overlay isn't shown).
+  function printToast(msg, isErr) {
+    hideToast();
+    var t = h("div", { id: "qwp-print-toast", text: msg });
+    t.style.cssText = "position:fixed;top:64px;left:50%;transform:translateX(-50%);z-index:2147483000;" +
+      "background:" + (isErr ? "#b3261e" : "#2f6d6b") + ";color:#fff;padding:8px 14px;border-radius:8px;" +
+      "font:600 13px/1.3 -apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;box-shadow:0 2px 10px rgba(0,0,0,.25);";
+    if (document.body) document.body.appendChild(t);
+    if (isErr) setTimeout(hideToast, 4500);
+  }
+  function hideToast() { var t = document.getElementById("qwp-print-toast"); if (t) t.remove(); }
+  // Toolbar "Afdrukken" chip entry point — headless: detect context, fetch this week, show the
+  // fullscreen print window (settings + live preview), like the planner/lesfiche overlays.
+  function printCurrentWeek() {
+    if (document.getElementById("qwp-print-overlay")) { document.getElementById("qwp-print-overlay").classList.add("qwp-show"); return; }
+    printToast("Weekplanning laden…");
+    ensurePrintData().then(function () {
+      var wr = thisWeekRange();
+      var weeks = state.weeks || 1;
+      return fetchPrintView(wr.start, weeks).then(function (pv) { hideToast(); openPrintOverlay(pv); });
+    }).catch(function (e) {
+      printToast("Afdrukken lukt niet — open eerst je agenda in Questi (en log in).", true);
+      console.error("[QWP] print:", e);
+    });
+  }
+  // Fullscreen print window: left = settings (week nav, comment, extra calendars), main = live
+  // A4 preview in an iframe. "Afdrukken" prints the iframe (its @page landscape is authoritative).
+  function openPrintOverlay(pv) {
+    var curPv = pv, curStart = pv.weekStart, weeks = pv.weeks, curExtras = {};
+    var frame = h("iframe", { class: "qpp-frame", title: "Afdrukvoorbeeld" });
+    var rangeLbl = h("span", { class: "qpp-range" });
+    function setRangeLbl() { rangeLbl.textContent = weeks > 1 ? (weekTitleFor(curPv, 0) + "  /  " + weekTitleFor(curPv, 1)) : weekTitleFor(curPv, 0); }
+    // comment
+    var chk = h("input", { type: "checkbox" });
+    var ta = h("textarea", { class: "qwp-textarea", rows: "3", placeholder: "bv. korte toelichting voor deze week…", disabled: "true" });
+    function opts() { return { comment: chk.checked ? (ta.value || "") : "" }; }
+    function renderPreview() {
+      var doc = frame.contentDocument || (frame.contentWindow && frame.contentWindow.document); if (!doc) return;
+      doc.open(); doc.write(printDocHtml(curPv, curExtras, opts())); doc.close();
+    }
+    function selectedCals() { return calBoxes.filter(function (b) { return b.cb.checked; }).map(function (b) { return b.id; }); }
+    function refreshExtras() {
+      fetchPrintExtras(curPv, selectedCals()).then(function (ex) { curExtras = ex; renderPreview(); });
+    }
+    chk.addEventListener("change", function () { ta.disabled = !chk.checked; renderPreview(); if (chk.checked) { try { ta.focus(); } catch (e) {} } });
+    ta.addEventListener("input", renderPreview);
+    function nav(delta) {
+      var ns = isoDate(addDays(curStart, delta * 7 * weeks));
+      fetchPrintView(ns, weeks).then(function (np) { curStart = ns; curPv = np; setRangeLbl(); refreshExtras(); });
+    }
+    // extra calendars
+    var extraCals = extraPrintCalendars(), calBoxes = [];
+    var calSection = [];
+    if (extraCals.length) {
+      calSection.push(h("div", { class: "qpp-side-lbl", text: "Andere agenda's meeprinten" }));
+      extraCals.forEach(function (c) {
+        var cb = h("input", { type: "checkbox", value: String(c.id) });
+        cb.addEventListener("change", refreshExtras);
+        calBoxes.push({ cb: cb, id: c.id });
+        calSection.push(h("label", { class: "qpp-check" }, [cb, h("span", { class: "qpp-cal-dot", style: "background:" + (c.color || "#888") }), h("span", { text: c.name })]));
+      });
+    }
+    var side = h("div", { class: "qpp-side" }, [
+      h("div", { class: "qpp-side-lbl", text: "Opmerking" }),
+      h("label", { class: "qpp-check" }, [chk, h("span", { text: "Opmerking toevoegen" })]),
+      ta
+    ].concat(calSection).concat([
+      h("div", { class: "qpp-hint", text: "Liggend A4, één pagina per week. Gebruik ← → om een andere week te kiezen." })
+    ]));
+    var doPrint = function () { try { frame.contentWindow.focus(); frame.contentWindow.print(); } catch (e) { printToast("Afdrukken mislukt.", true); } };
+    var header = h("div", { class: "qpp-header" }, [
+      h("span", { class: "qpp-title", text: "Afdrukken" }),
+      h("button", { class: "qpp-navbtn", title: "Vorige week", text: "←", onclick: function () { nav(-1); } }),
+      rangeLbl,
+      h("button", { class: "qpp-navbtn", title: "Volgende week", text: "→", onclick: function () { nav(1); } }),
+      h("span", { class: "qpp-spacer" }),
+      h("button", { class: "qpp-print", text: "Afdrukken", onclick: doPrint }),
+      h("button", { class: "qpp-x", title: "Sluiten", text: "✕", onclick: closePrintOverlay })
+    ]);
+    var overlay = h("div", { class: "qwp-print-overlay qwp-show", id: "qwp-print-overlay" }, [
+      header,
+      h("div", { class: "qpp-main" }, [side, h("div", { class: "qpp-preview" }, [frame])])
+    ]);
+    document.body.appendChild(overlay);
+    document.documentElement.classList.add("qwp-locked");
+    setRangeLbl();
+    refreshExtras(); // also renders the preview
+  }
+  function closePrintOverlay() {
+    var o = document.getElementById("qwp-print-overlay"); if (o) o.remove();
+    var planner = document.getElementById("qwp-overlay");
+    if (!(planner && planner.classList.contains("qwp-show"))) document.documentElement.classList.remove("qwp-locked");
+  }
+
   // ---------- Timetable (single side-by-side matrix, fits viewport) ----------
   function hhmmToMin(s) { var m = /^(\d{1,2}):(\d{2})/.exec(s || ""); return m ? (+m[1] * 60 + +m[2]) : null; }
   // Derive time rows, per-row end times, and a (day|time) presence set from the
   // live items — nothing about the schedule is hardcoded.
   function computeTimeRows() {
-    var set = {}, endAt = {}, presence = {};
-    view.slots.forEach(function (s) {
-      if (s.idCalendar === "cal_holidays") return;
-      if (s.isFullday || isThemaTitle(s.title) || s.themaFiche) return;
-      var t = s.time || (s.starttime ? String(s.starttime).slice(0, 5) : "");
-      if (!t) return;
-      set[t] = true;
-      presence[s.dayIdx + "|" + t] = true;
-      var e = (s.endtime ? String(s.endtime).slice(0, 5) : timeFromISO(s.enddate));
-      if (e) { (endAt[t] = endAt[t] || {}); endAt[t][e] = (endAt[t][e] || 0) + 1; }
-    });
-    view.timeRows = Object.keys(set).sort();
-    view.presence = presence;
-    var rowMeta = {};
-    view.timeRows.forEach(function (t) {
-      var best = null, bestN = 0, m = endAt[t] || {};
-      Object.keys(m).forEach(function (e) { if (m[e] > bestN) { bestN = m[e]; best = e; } });
-      rowMeta[t] = { start: t, end: best };
-    });
-    view.rowMeta = rowMeta;
+    var r = computeRowsFrom(view.slots);
+    view.timeRows = r.timeRows; view.rowMeta = r.rowMeta; view.presence = r.presence;
   }
   // Pauze/speeltijd after row index: a gap between this row's end and the next
   // row's start. Big gap = middagpauze, smaller = speeltijd. No hardcoded clock.
@@ -1986,6 +2355,19 @@
       }
     });
 
+    // Werkagenda (Feature 5): which calendar the planner loads + writes to. Only useful with >1.
+    var calSel = null, calField = null;
+    if ((ctx.calendars || []).length > 1) {
+      calSel = h("select", { class: "qwp-input", style: "width:100%" },
+        [h("option", { value: "", text: "— automatisch —", selected: (state.workingCalendarId == null ? "selected" : null) })].concat(
+          ctx.calendars.map(function (c) { return h("option", { value: String(c.id), text: c.name, selected: (String(state.workingCalendarId) === String(c.id) ? "selected" : null) }); })));
+      calField = h("div", { class: "qwp-field", style: "margin-top:16px;border-top:1px solid var(--line-soft);padding-top:14px" }, [
+        h("label", { text: "Werkagenda (lezen + schrijven)" }),
+        calSel,
+        h("div", { class: "qwp-note", style: "margin-top:6px", text: "Welke agenda de weekplanner toont en naar wegschrijft. 'Automatisch' kiest de agenda met de meeste lesitems. Stel dit in als je meerdere agenda's hebt of een collega-agenda plant." })
+      ]);
+    }
+
     var throttleInp = h("input", { class: "qwp-input", type: "number", min: "0", max: "10000", step: "50", style: "width:130px", value: String(state.saveThrottleMs != null ? state.saveThrottleMs : 250) });
     var throttleField = h("div", { class: "qwp-field", style: "margin-top:16px;border-top:1px solid var(--line-soft);padding-top:14px" }, [
       h("label", { text: "Vertraging tussen opgeslagen lesuren (ms)" }),
@@ -1995,10 +2377,25 @@
     var modal = h("div", { class: "qwp-modal", id: "qwp-modal" }, [
       h("div", { class: "qwp-modal-box qwp-inst-modal" }, [
         h("div", { class: "qwp-modal-hd", text: "Instellingen — vast vak per lesuur" }),
-        h("div", { class: "qwp-modal-body" }, [h("p", { class: "qwp-note", text: "Dit is de standaard die elke week geldt. Ze bepaalt welk vak 'Add selectie' automatisch in een leeg lesuur plaatst." }), grid, throttleField]),
+        h("div", { class: "qwp-modal-body" }, [h("p", { class: "qwp-note", text: "Dit is de standaard die elke week geldt. Ze bepaalt welk vak 'Add selectie' automatisch in een leeg lesuur plaatst." }), grid, calField, throttleField]),
         h("div", { class: "qwp-modal-ft" }, [
           h("button", { class: "qwp-btn qwp-ghost", text: "Sluiten", onclick: function () { modal.remove(); } }),
-          h("button", { class: "qwp-btn qwp-approve", text: "Bewaren", onclick: function () { var tv = parseInt(throttleInp.value, 10); state.saveThrottleMs = (isNaN(tv) || tv < 0) ? 250 : Math.min(tv, 10000); saveState(); modal.remove(); reloadSlotVakLabels(); renderTimetable(); setStatus("Instellingen bewaard — geldt voor elke week."); } })
+          h("button", { class: "qwp-btn qwp-approve", text: "Bewaren", onclick: function () {
+            var tv = parseInt(throttleInp.value, 10); state.saveThrottleMs = (isNaN(tv) || tv < 0) ? 250 : Math.min(tv, 10000);
+            // Werkagenda change: apply + reload the grid from the chosen calendar.
+            var calChanged = false;
+            if (calSel) {
+              var newWc = calSel.value ? calSel.value : null;
+              if (String(newWc) !== String(state.workingCalendarId)) {
+                calChanged = true; state.workingCalendarId = newWc;
+                if (newWc != null) ctx.calendarId = newWc; // specific pick loads/writes this calendar
+              }
+            }
+            saveState(); modal.remove(); reloadSlotVakLabels(); renderTimetable();
+            if (calChanged && state.workingCalendarId == null) { try { location.reload(); return; } catch (e) {} } // 'automatisch' → re-detect busiest
+            if (calChanged) { reloadAndRender(); setStatus("Werkagenda gewijzigd — week herladen."); return; }
+            setStatus("Instellingen bewaard — geldt voor elke week.");
+          } })
         ])
       ])
     ]);
@@ -2515,7 +2912,7 @@
     loadState().then(function () {
       view.weeks = state.weeks || 1;
       [0, 1, 2].forEach(function (i) { if (state.panels[i]) view.panels[i] = Object.assign(view.panels[i], state.panels[i]); });
-      syncWeekSeg(); syncSegs(); applySplit(); wireSplitter();
+      syncWeekSeg(); syncSegs(); applySplit(); wireSplitter(); applySideCollapse();
       setStatus("Questi-context detecteren…");
       return authProbe().then(function (st) {
         if (st === "loggedout") { showLoginRequired(); return "__STOP__"; }
@@ -2527,6 +2924,7 @@
       return loadEverything();
     }).catch(function (e) { console.error("[QWP] boot error:", e); setStatus("Laadfout — probeer 'Vernieuwen'."); });
   }
+  window.__QWP_PRINT = printCurrentWeek;
 
   // Test hook (no effect in the browser).
   window.__QWP_TEST = { boot: boot, view: view, state: state, ctx: ctx, detectContext: detectContext, renderTimetable: renderTimetable, openSlotPopup: openSlotPopup, openMassAdd: openMassAdd, openInstellingen: openInstellingen };
@@ -2537,7 +2935,7 @@
   window.__QWP_SHARED = {
     ctx: ctx, API: API, API_ROOT: API_ROOT,
     jget: jget, qs: qs, xsrfToken: xsrfToken, writeHeaders: writeHeaders,
-    fetchTags: fetchTags, fetchOwnTags: fetchOwnTags, fetchSharedTags: fetchSharedTags,
+    fetchTags: fetchTags, fetchOwnTags: fetchOwnTags, fetchSharedTags: fetchSharedTags, invalidateOwnTags: invalidateOwnTags,
     topTagsForOwner: topTagsForOwner, childTags: childTags, tagTitle: tagTitle, tagColor: tagColor,
     ownerName: ownerName, h: h
   };

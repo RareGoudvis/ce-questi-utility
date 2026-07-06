@@ -66,6 +66,7 @@
     search: "", gradeFilter: "", tagChips: {},   // ficheId -> [tagId,…]
     cols: 1, sortKey: null, sortDir: "asc",
     loading: false, tagsMapped: false, tagsMapping: false,
+    dirtyWrites: false,         // any live write this session → reload Questi on close (like planner)
     importEnabled: false        // import stays gated until the OPSTAP resolver lands (August)
   };
   var GRADES = ["K0", "K1", "K2", "K3", "L1", "L2", "L3", "L4", "L5", "L6", "NLG"];
@@ -113,6 +114,22 @@
     return fetch(api() + "/lessons?" + qs({ schoolId: sid(), lessons: ids }),
       { method: "DELETE", credentials: "include", headers: bodylessHeaders() })
       .then(resolveJson("DELETE lessons", ids.join(","), null));
+  }
+  // ---------- Tag-catalog CRUD (standalone tags, not fiche membership) ----------
+  // Create a user tag. body: { title, color, schoolId, [parent] }. → new tag object.
+  function createUserTag(body) {
+    return fetch(api() + "/lessons/user-tags",
+      { method: "POST", credentials: "include", headers: S().writeHeaders(), body: JSON.stringify(body) })
+      .then(resolveJson("POST user-tag", body.title, body));
+  }
+  // Delete a user tag. action "unlink" (fiches keep, lose this tag) or "move" (re-tag fiches to
+  // secondTagId, then delete). Bodyless DELETE — same header shape as deleteFiches.
+  function deleteUserTag(id, action, secondTagId) {
+    var p = { schoolId: sid(), action: action };
+    if (action === "move") p.secondTagId = secondTagId;
+    return fetch(api() + "/lessons/user-tags/" + id + "?" + qs(p),
+      { method: "DELETE", credentials: "include", headers: bodylessHeaders() })
+      .then(resolveJson("DELETE user-tag", id, null));
   }
 
   // ---------- Small data helpers ----------
@@ -166,6 +183,10 @@
       h("button", { class: "qwl-sbtn", id: "qwl-cols", onclick: toggleCols, text: "" }),
       h("button", { class: "qwl-sbtn", onclick: reload, text: "Vernieuwen" }),
       h("button", { class: "qwl-sbtn qwl-import", id: "qwl-import", onclick: function () { if (mgr.importEnabled) openImportView(); }, title: "Binnenkort — OPSTAP volgt", disabled: mgr.importEnabled ? null : "true", text: "Importeren" }),
+      h("div", { class: "qwl-side-sep" }),
+      h("div", { class: "qwl-side-lbl", text: "Tags beheren" }),
+      h("button", { class: "qwl-sbtn", id: "qwl-tagadd", onclick: openAddTagModal, text: "Tag toevoegen" }),
+      h("button", { class: "qwl-sbtn qwl-danger", id: "qwl-tagdel", onclick: openRemoveTagModal, text: "Tag verwijderen" }),
       h("div", { class: "qwl-side-grow" }),
       h("button", { class: "qwl-sbtn qwl-review", id: "qwl-review", onclick: openReviewEdits, text: "Wijzigingen controleren" }),
       h("button", { class: "qwl-sbtn qwl-muted", onclick: openDiag, title: "Zelftest — leest alleen", text: "Diagnose" })
@@ -202,6 +223,8 @@
     if (mgr.els.root) mgr.els.root.classList.remove("qwl-show");
     var planner = document.getElementById("qwp-overlay");
     if (!(planner && planner.classList.contains("qwp-show"))) document.documentElement.classList.remove("qwl-locked");
+    // Mirror the planner: if we wrote anything (tags/fiches), reload so Questi's SPA reflects it.
+    if (mgr.dirtyWrites) { try { location.reload(); } catch (e) {} }
   }
   function reload() { loadList(mgr.tagFilter != null ? mgr.tagFilter : allOwnTagId()); }
   function toggleCols() { mgr.cols = (mgr.cols === 2 ? 1 : 2); lstate.cols = mgr.cols; saveState(); renderList(); }
@@ -537,7 +560,7 @@
         if (mgr.selected[oldId]) { delete mgr.selected[oldId]; mgr.selected[newId] = true; }
         delete mgr.pending[id];
       });
-    }, prog.update).then(function (fails) { prog.done(fails, keys.length); renderList(); });
+    }, prog.update).then(function (fails) { if (fails.length < keys.length) mgr.dirtyWrites = true; prog.done(fails, keys.length); renderList(); });
   }
 
   // ------------------------------------------------------------------------
@@ -598,6 +621,128 @@
         stagePending(f, edit, { tags: next, create_tags: createTags }, [change]);
       });
     }, prog.update).then(function (fails) { prog.done(fails, ids.length); renderList(); if (!fails.length) setStatus(pendCount() + " wijziging(en) klaargezet — druk 'Wijzigingen controleren'."); });
+  }
+
+  // ------------------------------------------------------------------------
+  //  Tag-catalog management — create / delete standalone tags (immediate write,
+  //  confirmed). Distinct from "Tags bewerken", which sets tags ON selected fiches.
+  // ------------------------------------------------------------------------
+  // Deletable tags = the user's real (non-default) tags. Default buckets (Alle / Zonder tag /
+  // Samenwerk) are system-owned and must never be offered for delete/parent.
+  function deletableTags() { return mgr.ownTags.filter(function (t) { return t.type !== "default"; }); }
+  function tagPickLabel(t) {
+    // Prefix subtags with their parent subject so the flat <select> stays readable.
+    var p = (t.parent && String(t.parent) !== "0") ? ownTagById(t.parent) : null;
+    return (p ? ((p.title || "").trim() + " › ") : "") + (t.title || "").trim();
+  }
+  function applyNewTag(tag, wantedParentId) {
+    if (wantedParentId && (tag.parent == null || String(tag.parent) === "0")) {
+      setStatus("Tag toegevoegd als hoofd-tag (subtag niet ondersteund door Questi).");
+    } else {
+      setStatus("Tag toegevoegd.");
+    }
+    mgr.ownTags.push(tag);
+    mgr.dirtyWrites = true;
+    S().invalidateOwnTags();
+    renderTagBar();
+  }
+  function applyRemovedTag(id, action, secondTagId) {
+    mgr.ownTags = mgr.ownTags.filter(function (t) { return String(t.id) !== String(id); });
+    // Keep per-fiche tag chips coherent: drop the id everywhere, or remap it on a move.
+    Object.keys(mgr.tagChips).forEach(function (fid) {
+      var l = mgr.tagChips[fid];
+      var next = [];
+      l.forEach(function (x) {
+        if (String(x) === String(id)) { if (action === "move" && secondTagId != null) next.push(Number(secondTagId)); }
+        else next.push(x);
+      });
+      // dedupe (a move may collide with an existing membership)
+      mgr.tagChips[fid] = next.filter(function (v, i) { return next.indexOf(v) === i; });
+    });
+    mgr.dirtyWrites = true;
+    S().invalidateOwnTags();
+    setStatus("Tag verwijderd.");
+    if (String(mgr.tagFilter) === String(id)) { loadList(allOwnTagId()); }
+    else { renderTagBar(); renderList(); }
+  }
+  function modalNote(m, msg) {
+    var bd = m.querySelector(".qwl-modal-bd");
+    var old = bd.querySelector(".qwl-note.qwl-warn.qwl-live"); if (old) old.remove();
+    bd.appendChild(h("div", { class: "qwl-note qwl-warn qwl-live", text: msg }));
+  }
+  function openAddTagModal() {
+    var nameInp = h("input", { class: "qwl-input", type: "text", placeholder: "naam van de tag" });
+    var colorInp = h("input", { class: "qwl-color", type: "color", value: "#e0e0e0" });
+    var subjects = S().topTagsForOwner(mgr.ownTags, ctx().ownerId).filter(isSubjectTop);
+    var parentSel = h("select", { class: "qwl-gradesel" },
+      [h("option", { value: "", text: "Hoofd-tag (geen vak)" })].concat(subjects.map(function (t) {
+        return h("option", { value: String(t.id), text: (t.title || "").trim() });
+      })));
+    var m = modal("Tag toevoegen", [
+      h("label", { class: "qwl-flabel", text: "Naam" }), nameInp,
+      h("label", { class: "qwl-flabel", text: "Kleur" }), colorInp,
+      h("label", { class: "qwl-flabel", text: "Onder vak (optioneel)" }), parentSel,
+      h("div", { class: "qwl-note", text: "Een subtag valt onder een vak; laat op 'Hoofd-tag' staan voor een nieuw vak." })
+    ], [], "");
+    var ft = m.querySelector(".qwl-modal-ft");
+    ft.appendChild(h("button", { class: "qwl-btn qwl-ghost", onclick: m.close, text: "Annuleer" }));
+    ft.appendChild(h("button", { class: "qwl-btn", onclick: function () {
+      var title = (nameInp.value || "").trim();
+      if (!title) { modalNote(m, "Geef een naam op."); return; }
+      var parentId = parentSel.value || null;
+      var body = { title: title, color: colorInp.value || "#e0e0e0", schoolId: sid() };
+      if (parentId) body.parent = Number(parentId);
+      setStatus("Tag aanmaken…");
+      createUserTag(body).then(function (tag) {
+        m.close(); applyNewTag(tag, parentId);
+      }).catch(function (e) { modalNote(m, "Aanmaken faalde: " + ((e && e.message) || e)); });
+    }, text: "Toevoegen" }));
+    setTimeout(function () { try { nameInp.focus(); } catch (e) {} }, 0);
+  }
+  function openRemoveTagModal() {
+    var tags = deletableTags();
+    if (!tags.length) {
+      var mm = modal("Tag verwijderen", [h("div", { class: "qwl-note", text: "Je hebt geen eigen tags om te verwijderen." })], [], "");
+      mm.querySelector(".qwl-modal-ft").appendChild(h("button", { class: "qwl-btn", onclick: mm.close, text: "OK" }));
+      return;
+    }
+    tags = tags.slice().sort(function (a, b) { return tagPickLabel(a).localeCompare(tagPickLabel(b), undefined, { numeric: true }); });
+    var tagSel = h("select", { class: "qwl-gradesel" }, tags.map(function (t) { return h("option", { value: String(t.id), text: tagPickLabel(t) }); }));
+    // Second select (move target) — all deletable tags except the currently selected one.
+    var moveSel = h("select", { class: "qwl-gradesel" });
+    function fillMoveSel() {
+      moveSel.innerHTML = "";
+      tags.filter(function (t) { return String(t.id) !== String(tagSel.value); })
+        .forEach(function (t) { moveSel.appendChild(h("option", { value: String(t.id), text: tagPickLabel(t) })); });
+    }
+    fillMoveSel();
+    tagSel.addEventListener("change", fillMoveSel);
+    var rUnlink = h("input", { type: "radio", name: "qwl-delmode", value: "unlink", checked: "true" });
+    var rMove = h("input", { type: "radio", name: "qwl-delmode", value: "move" });
+    var moveRow = h("div", { class: "qwl-delmove", style: "display:none" }, [
+      h("label", { class: "qwl-flabel", text: "Verplaats fiches naar" }), moveSel
+    ]);
+    function syncMode() { moveRow.style.display = rMove.checked ? "" : "none"; }
+    rUnlink.addEventListener("change", syncMode); rMove.addEventListener("change", syncMode);
+    var m = modal("Tag verwijderen", [
+      h("label", { class: "qwl-flabel", text: "Tag" }), tagSel,
+      h("label", { class: "qwl-radio" }, [rUnlink, h("span", { text: " Verwijder tag — fiches blijven bestaan, verliezen enkel deze tag" })]),
+      h("label", { class: "qwl-radio" }, [rMove, h("span", { text: " Verplaats fiches naar een andere tag, dan verwijder" })]),
+      moveRow,
+      h("div", { class: "qwl-note", text: "Er worden geen lesfiches verwijderd." })
+    ], [], "");
+    var ft = m.querySelector(".qwl-modal-ft");
+    ft.appendChild(h("button", { class: "qwl-btn qwl-ghost", onclick: m.close, text: "Annuleer" }));
+    ft.appendChild(h("button", { class: "qwl-btn qwl-danger", onclick: function () {
+      var id = tagSel.value; if (!id) return;
+      var action = rMove.checked ? "move" : "unlink";
+      var second = action === "move" ? moveSel.value : null;
+      if (action === "move" && !second) { modalNote(m, "Kies een tag om naartoe te verplaatsen."); return; }
+      setStatus("Tag verwijderen…");
+      deleteUserTag(id, action, second).then(function () {
+        m.close(); applyRemovedTag(id, action, second);
+      }).catch(function (e) { modalNote(m, "Verwijderen faalde: " + ((e && e.message) || e)); });
+    }, text: "Verwijderen" }));
   }
 
   // ------------------------------------------------------------------------
@@ -674,6 +819,7 @@
       }
       prog.update(0, batch.length);
       return deleteFiches(batch).then(function () {
+        mgr.dirtyWrites = true;
         var gone = {}; batch.forEach(function (id) { gone[id] = true; delete mgr.selected[id]; delete mgr.tagChips[id]; });
         mgr.fiches = mgr.fiches.filter(function (f) { return !gone[f.id]; });
         prog.done([], batch.length); applyFilter();

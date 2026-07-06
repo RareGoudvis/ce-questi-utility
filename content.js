@@ -57,6 +57,7 @@
   // rounded pill, dark text, a small icon. Self-contained inline SVG + styles.
   var CAL_ICON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>';
   var DOC_ICON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="8" y1="13" x2="16" y2="13"></line><line x1="8" y1="17" x2="16" y2="17"></line></svg>';
+  var PRINT_ICON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>';
   function makeChip(opts, floating) {
     var b = document.createElement("button");
     b.setAttribute(opts.attr, "1");
@@ -73,13 +74,15 @@
   }
   var PLANNER_CHIP = { attr: "data-qwp-launcher", title: "Questi Weekplanner (Alt+P)", label: "Weekplanner", icon: CAL_ICON, floatRight: 16, onClick: toggle };
   var LESSONS_CHIP = { attr: "data-qwl-launcher", title: "Lesfiches beheren", label: "Lesfiches", icon: DOC_ICON, floatRight: 158, onClick: function () { if (typeof window.__QWP_OPEN_LESSONS === "function") window.__QWP_OPEN_LESSONS(); } };
+  var PRINT_CHIP = { attr: "data-qwp-print", title: "Weekplanning afdrukken", label: "Afdrukken", icon: PRINT_ICON, floatRight: 300, onClick: function () { if (typeof window.__QWP_PRINT === "function") window.__QWP_PRINT(); } };
   // The launcher belongs only on the calendar view. Questi is an SPA, so the URL can
   // change without a reload — gate on the current path and remove the button elsewhere.
   function onCalendar() { return /\/(calendar|kalender|agenda)/i.test(location.pathname || ""); }
-  function haveChips() { return document.querySelector("[data-qwp-launcher]") && document.querySelector("[data-qwl-launcher]"); }
+  function haveChips() { return document.querySelector("[data-qwp-launcher]") && document.querySelector("[data-qwl-launcher]") && document.querySelector("[data-qwp-print]"); }
   function removeLauncher() {
     var a = document.querySelector("[data-qwp-launcher]"); if (a) a.remove();
     var b = document.querySelector("[data-qwl-launcher]"); if (b) b.remove();
+    var c = document.querySelector("[data-qwp-print]"); if (c) c.remove();
   }
   function ensureLauncher() {
     if (!onCalendar()) { removeLauncher(); return; }   // off the calendar → no buttons
@@ -87,13 +90,15 @@
     removeLauncher();                                   // clear a partial insert, re-add as a pair
     var anchor = findToolbarAnchor();
     if (anchor && anchor.parentNode) {
-      // Insert Weekplanner right after the anchor, then Lesfiches right after that.
+      // Insert Weekplanner right after the anchor, then Lesfiches, then Afdrukken.
       var planner = makeChip(PLANNER_CHIP, false);
       anchor.parentNode.insertBefore(planner, anchor.nextSibling);
-      anchor.parentNode.insertBefore(makeChip(LESSONS_CHIP, false), planner.nextSibling);
+      var lessons = makeChip(LESSONS_CHIP, false);
+      anchor.parentNode.insertBefore(lessons, planner.nextSibling);
+      anchor.parentNode.insertBefore(makeChip(PRINT_CHIP, false), lessons.nextSibling);
       return;
     }
-    if (document.body) { document.body.appendChild(makeChip(PLANNER_CHIP, true)); document.body.appendChild(makeChip(LESSONS_CHIP, true)); } // fallback
+    if (document.body) { document.body.appendChild(makeChip(PLANNER_CHIP, true)); document.body.appendChild(makeChip(LESSONS_CHIP, true)); document.body.appendChild(makeChip(PRINT_CHIP, true)); } // fallback
   }
   var _luPending = false;
   function scheduleLauncher() {
@@ -118,6 +123,7 @@
         if (onCalendar() && !haveChips() && document.body) {
           document.body.appendChild(makeChip(PLANNER_CHIP, true));
           document.body.appendChild(makeChip(LESSONS_CHIP, true));
+          document.body.appendChild(makeChip(PRINT_CHIP, true));
         }
       } catch (e) { /* no-op */ }
     }, 2500);

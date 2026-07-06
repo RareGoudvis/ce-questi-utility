@@ -119,6 +119,11 @@ html.qwl-locked { overflow: hidden; }
 .qwl-textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; font: 13px/1.5 inherit; resize: vertical; background: var(--field); }
 .qwl-note { color: var(--muted); font-size: 12.5px; margin-bottom: 10px; }
 .qwl-note.qwl-warn { color: var(--danger); background: var(--danger-weak); padding: 8px 10px; border-radius: 8px; }
+.qwl-modal-bd .qwl-gradesel { width: 100%; }
+.qwl-color { width: 52px; height: 34px; padding: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); cursor: pointer; }
+.qwl-radio { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; margin: 10px 0 0; cursor: pointer; }
+.qwl-radio input { margin-top: 2px; }
+.qwl-delmove { margin-top: 8px; }
 .qwl-loading { padding: 24px; text-align: center; color: var(--muted); }
 
 /* diff rows (review) */
