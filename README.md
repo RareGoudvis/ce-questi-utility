@@ -88,6 +88,10 @@ De knoppen verschijnen **enkel op de kalenderpagina**. Sluiten doe je met het **
 
 - **Niets wordt geschreven** tot je goedkeurt; tot dan blijft alles enkel in de planner staan.
 - Wijzigingen gelden **enkel voor die ene week** (herhalende reeksen blijven ongemoeid).
+- **Lichamelijke opvoeding.** Zet je het **Vak** van een lesuur op Lichamelijke opvoeding, dan krijgt
+  het meteen die titel en wordt het als gymles gemarkeerd (geen lesfiche nodig). Onder het titelveld
+  staan twee knoppen — **Lichamelijke opvoeding** en **Zwemmen** — om te wisselen. Hangt er al een
+  lesfiche aan, dan blijft die staan.
 - **Titel aanpassen.** In het lesuur-venster staat bovenaan een veld **Titel**. Handig voor dingen
   die ingepland moeten worden maar geen lesfiche nodig hebben (een toets, een uitstap): typ een
   titel, kies geen fiche, en schrijf weg. Zit er wél een fiche aan het lesuur, dan waarschuwt het
@@ -108,7 +112,9 @@ De knoppen verschijnen **enkel op de kalenderpagina**. Sluiten doe je met het **
   Bij het wegschrijven krijgt zo'n item de titel `"Godsdienst — <fichetitel>"`: zo weet de planner
   ook na een herlaadbeurt nog welk thema het is (voordien raakte dat kwijt zodra je er een fiche in
   legde, en verdween er één van de twee rijen). De beschrijving in Questi blijft
-  `"Zie themafiche."`.
+  `"Zie themafiche."`. Een **lesuur** met vak WO of Godsdienst krijgt als beschrijving de **naam van
+  de themafiche** van die week (is er geen, dan de vaknaam) — zo staat er iets zinnigs op de
+  klaswebsite in plaats van "Zie themafiche.". Zo'n lesuur mag ook gewoon een eigen lesfiche krijgen.
 - **Instellingen** (vast vak per lesuur) blijft bewaard en geldt voor elke week.
 - **Diagnose** (links onderaan) draait een zelftest als er iets niet automatisch gevonden werd.
 

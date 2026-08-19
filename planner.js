@@ -677,7 +677,28 @@
   var GYM_RE = /\b(LO|zwemmen|gym|turnen|L\.O\.)\b/i;
   var THEMA_RE = /\b(WO|wereldori|godsdienst)\b/i;
   function isGymTitle(t) { return GYM_RE.test(t || ""); }
+  // BOOTSTRAP HEURISTIC ONLY — never a live rule. It must be applied to a title the USER cannot
+  // edit (origTitle at hydrate) or to a TAG title, never to slot.title. Three bugs came from
+  // ignoring that: thema rows collapsing, collapsing again after commit, and a lesuur vanishing
+  // from the grid entirely once someone typed "Godsdienst - Les 1" into the Titel field.
+  // Classification at render/interaction time uses isThemaSlot(s) / s.themaFiche.
   function isThemaTitle(t) { return THEMA_RE.test(t || ""); }
+  // Whether a slot's vak makes it a "refer to the themafiche" lesson, judged on the TAG title.
+  function isThemaVak(tagId) {
+    if (tagId == null || tagId === "") return false;
+    var top = topTagIdOf(tagId);
+    return top != null && THEMA_RE.test((anyTagTitle(top) || "").trim());
+  }
+  // Lichamelijke opvoeding-style vak: title only, no fiche. GYM_RE matches ITEM titles ("LO",
+  // "zwemmen") and does NOT match the words "Lichamelijke opvoeding", and VAKKEN has no LO row,
+  // so the tag title is the only correct signal.
+  var LO_VAK_RE = /lichamelijke|turnen|^\s*l\.?\s*o\.?\s*$|^\s*zwemmen\s*$/i;
+  function isLoVak(tagId) {
+    if (tagId == null || tagId === "") return false;
+    var top = topTagIdOf(tagId);
+    return top != null && LO_VAK_RE.test((anyTagTitle(top) || "").trim());
+  }
+  var LO_TITLES = ["Lichamelijke opvoeding", "Zwemmen"];
 
   // ---------- Thema identity ----------
   // A whole-week thema item (WO, Godsdienst, …) needs an identity that SURVIVES assigning a
@@ -845,9 +866,26 @@
   }
   // Commit rule (for the external reader): item title = fiche title (set on assign /
   // by the attachment POST); item description = the top-level vak (subject) name.
+  // The week's themafiche title for a lesuur's vak, without its "<Thema> — " prefix.
+  function themaFicheTitleFor(slot) {
+    if (!slot || slot.isFullday) return "";
+    var top = topTagIdOf(slot.vak); if (top == null) return "";
+    var hit = view.slots.filter(function (x) {
+      return x.isFullday && x.weekIdx === slot.weekIdx && x.idCalendar !== "cal_holidays" &&
+        x.themaTagId != null && String(x.themaTagId) === String(top) && x.ficheTitle;
+    })[0];
+    return hit ? (stripThemaPrefix(hit.ficheTitle) || "").trim() : "";
+  }
   function descFor(slot) {
     if (slot.isGym) return null;
-    if (slot.themaFiche) return "Zie themafiche.";
+    // A whole-week bar keeps the literal; it already names its fiche in its title.
+    if (slot.isFullday && slot.themaFiche) return "Zie themafiche.";
+    // A lesuur that refers to the themafiche NAMES it — this description is published to the
+    // class website, where "Zie themafiche." means nothing. No themafiche that week → vak name.
+    if (slot.themaFiche && !slot.ficheContentId) {
+      var tf = themaFicheTitleFor(slot);
+      if (tf) return tf;
+    }
     // Description = the LIVE top-level tag ("vak") the fiche was filtered/picked under. No
     // title-guessing: downstream tooling reads this to disambiguate same-titled fiches
     // (e.g. "Thema 5 - Les …"), so it must be the real tag, never a heuristic from the title.
@@ -902,7 +940,9 @@
           dayIdx: day, weekIdx: (wk < 0 ? 0 : wk), time: timeFromISO(it.startdate),
           groups: (it.groups && it.groups.length) ? it.groups : writeGroups(),
           hasAtt: !!it.has_attachments, isEditable: it.is_editable !== false,
-          isGym: isGymTitle(it.title), themaFiche: isThemaTitle(it.title),
+          // Title-based only for a whole-week item (its title is the thema's own). A lesuur's
+          // themaFiche comes from its VAK below — a typed title must never reclassify it.
+          isGym: isGymTitle(it.title), themaFiche: it.is_fullday_item ? isThemaTitle(it.title) : false,
           // Full-day items have no start time, so slotKeyStd() would give every one of them on
           // a weekday the SAME settings key ("<day>|") — WO and Godsdienst would share a vak.
           // Their vak comes from the resolved thema tag instead (set by stampThemaKey below).
@@ -914,7 +954,11 @@
         };
       });
       // Stamp thema identity before anything can overwrite a title.
-      slots.forEach(function (s) { stampThemaKey(s); if (s.isFullday && s.themaTagId != null) s.vak = s.themaTagId; });
+      slots.forEach(function (s) {
+        stampThemaKey(s);
+        if (s.isFullday && s.themaTagId != null) s.vak = s.themaTagId;
+        else if (!s.isFullday && isThemaVak(s.vak)) s.themaFiche = true;
+      });
       var need = slots.filter(function (s) { return s.idCalendar !== "cal_holidays" && (s.hasAtt || !/^Lesuur\s*\d+$/.test(s.title)); });
       var chain = Promise.resolve();
       need.forEach(function (s) {
@@ -1115,18 +1159,17 @@
     var el = elId("qwp-balance"); if (!el) return; el.innerHTML = "";
     var counts = {}, filled = 0, empty = 0;
     view.slots.forEach(function (s) {
-      if (s.idCalendar === "cal_holidays" || s.isFullday || isThemaTitle(s.title) || s.themaFiche) return;
+      if (s.idCalendar === "cal_holidays" || s.isFullday) return;
       if (isNoSchool(s.dayIdx, s.time)) return;
       if (s.ficheContentId || s.isGym) {
         filled++;
+        // Subject = the slot's live top-level tag (same source as the written description).
+        // A gym slot uses its vak too when it has one, so an LO lesuur reads "Lichamelijke
+        // opvoeding" rather than the generic "Gym".
         var label, color = null;
-        if (s.isGym) label = "Gym";
-        else {
-          // Subject = the slot's live top-level tag (same source as the written description).
-          var top = topTagIdOf(s.vak);
-          label = top != null ? ((anyTagTitle(top) || "").trim() || "Overig") : "Overig";
-          if (top != null) color = anyTagColor(top);
-        }
+        var top = topTagIdOf(s.vak);
+        if (top != null) { label = (anyTagTitle(top) || "").trim() || "Overig"; color = anyTagColor(top); }
+        else label = s.isGym ? "Gym" : "Overig";
         if (!counts[label]) counts[label] = { n: 0, color: color };
         counts[label].n++;
       } else if (isTargetable(s)) empty++;
@@ -1247,7 +1290,7 @@
   function pvSlotAt(pv, weekIdx, dayIdx, time) {
     return pv.slots.filter(function (s) {
       return s.weekIdx === weekIdx && s.dayIdx === dayIdx && s.idCalendar !== "cal_holidays" &&
-        !(s.isFullday || isThemaTitle(s.title) || s.themaFiche) &&
+        !s.isFullday &&
         (s.time || (s.starttime ? String(s.starttime).slice(0, 5) : "")) === time;
     })[0] || null;
   }
@@ -1263,7 +1306,7 @@
   // built by buildFicheColors) → the slot's settings/vak top-tag colour → neutral.
   function printCellParts(pv, s) {
     if (!s) return null;
-    var thema = s.themaFiche || isThemaTitle(s.title);
+    var thema = s.themaFiche || isThemaSlot(s);
     // A whole-week thema BAND must print the fiche it carries — "Zie themafiche." is the item
     // description, useless on paper. Only a normal lesuur marked as thema falls back to it.
     var main = (thema && !(isThemaSlot(s) && s.ficheTitle)) ? "Zie themafiche."
@@ -1589,7 +1632,7 @@
   function buildFicheColors(pv) {
     var idset = {};
     (pv.slots || []).forEach(function (s) {
-      if (!s.ficheContentId || s.isGym || s.themaFiche || isThemaTitle(s.title)) return;
+      if (!s.ficheContentId || s.isGym || s.themaFiche) return;
       idset[s.ficheContentId] = true;
     });
     function collect() { var m = {}; Object.keys(idset).forEach(function (id) { m[id] = _ficheColorCache[id] || ""; }); pv.ficheColor = m; return pv; }
@@ -1606,7 +1649,7 @@
     var set = {}, endAt = {}, presence = {};
     (slots || []).forEach(function (s) {
       if (s.idCalendar === "cal_holidays") return;
-      if (s.isFullday || isThemaTitle(s.title) || s.themaFiche) return;
+      if (s.isFullday) return;
       var t = s.time || (s.starttime ? String(s.starttime).slice(0, 5) : "");
       if (!t) return;
       set[t] = true; presence[s.dayIdx + "|" + t] = true;
@@ -1779,7 +1822,9 @@
     return gap >= 40 ? "middagpauze" : "speeltijd";
   }
   function slotAt(weekIdx, dayIdx, time) {
-    return view.slots.filter(function (s) { return s.weekIdx === weekIdx && s.dayIdx === dayIdx && s.idCalendar !== "cal_holidays" && !(s.isFullday || isThemaTitle(s.title) || s.themaFiche) && (s.time || (s.starttime ? String(s.starttime).slice(0, 5) : "")) === time; })[0] || null;
+    // Only a WHOLE-WEEK item belongs to a thema row; a normal lesuur always belongs in the grid,
+    // whatever it happens to be called. Testing s.title here made a typed title erase the cell.
+    return view.slots.filter(function (s) { return s.weekIdx === weekIdx && s.dayIdx === dayIdx && s.idCalendar !== "cal_holidays" && !s.isFullday && (s.time || (s.starttime ? String(s.starttime).slice(0, 5) : "")) === time; })[0] || null;
   }
   // Whole-week theme slot (WO bucket vs Godsdienst bucket). Only a REAL all-day
   // item counts (is_fullday_item) — the theme rows exist only when Questi actually
@@ -1887,7 +1932,9 @@
 
   // A targetable slot = an editable, empty (no fiche/gym/thema) lesuur — the only
   // kind you can drop a fiche onto or mark as a mass-add target.
-  function isTargetable(s) { return s && s.isEditable && s.idCalendar !== "cal_holidays" && !s.ficheContentId && !s.isGym && !s.themaFiche && !isThemaTitle(s.title); }
+  // A WO/Godsdienst lesuur refers to the week's themafiche by default, but may still receive its
+  // own fiche — so themaFiche no longer blocks targeting, and the title is never consulted.
+  function isTargetable(s) { return s && s.isEditable && s.idCalendar !== "cal_holidays" && !s.isFullday && !s.ficheContentId && !s.isGym; }
   function isTarget(itemId) { return view.targetSlots.indexOf(itemId) > -1; }
   function toggleTarget(itemId) {
     var i = view.targetSlots.indexOf(itemId);
@@ -1929,7 +1976,7 @@
       }, [h("div", { class: "qwp-cell-empty-hint", text: "leeg" })]);
     }
     var dirty = computeDirty(s);
-    var thema = s.themaFiche || isThemaTitle(s.title);
+    var thema = s.themaFiche || isThemaSlot(s);
     var targetable = isTargetable(s);
     var cls = "qwp-cell" + sepCls;
     if (view.selectedSlotId === s.itemId) cls += " sel";
@@ -2078,6 +2125,28 @@
       else if (e.key === "Escape") { titleInp.value = titleOrig; applyTitle(); titleInp.blur(); }
     });
     titleInp.addEventListener("blur", applyTitle);
+
+    // LO/zwemmen is "title only, no fiche". When the vak is an LO-type tag, offer the two titles
+    // as one click each instead of retyping them every week.
+    var loRow = h("div", { class: "qwp-lorow" });
+    function setLoTitle(t) {
+      if (!titleDirty) { pushUndo("titel"); titleDirty = true; }
+      s.title = t; titleInp.value = t;
+      // Only claim the slot as gym when there is nothing to lose — an attached fiche stays.
+      if (!s.ficheContentId) { s.isGym = true; gymChk.checked = true; }
+      refreshTitleNote(); renderTimetable();
+    }
+    function refreshLoRow() {
+      loRow.innerHTML = "";
+      if (!isLoVak(s.vak) || s.isFullday) { loRow.style.display = "none"; return; }
+      loRow.style.display = "";
+      LO_TITLES.forEach(function (t) {
+        loRow.appendChild(h("button", {
+          class: "qwp-lobtn" + ((s.title || "") === t ? " on" : ""),
+          text: t, onclick: function () { setLoTitle(t); refreshLoRow(); }
+        }));
+      });
+    }
     var results = h("div", { class: "qwp-results", id: "qwp-pop-results" });
     var gymChk = h("input", { type: "checkbox" }); if (s.isGym) gymChk.checked = true;
 
@@ -2122,19 +2191,25 @@
         ensureThemaKeys(view.slots);
         renderTimetable();
       } else {
-        s.themaFiche = curTagId != null && isThemaTitle(tagTitle("self", curTagId));
+        s.themaFiche = isThemaVak(curTagId);
+        // Tagging a lesuur as Lichamelijke opvoeding titles it — it needs no fiche, so the title
+        // IS the lesson. Defaults to the first of LO_TITLES; the buttons switch to Zwemmen.
+        // Auto-title only when there is nothing to lose: no fiche, and not already an LO title.
+        // With a fiche attached the buttons stay available, but nothing is overwritten silently.
+        if (isLoVak(curTagId) && !s.ficheContentId && LO_TITLES.indexOf(s.title || "") < 0) setLoTitle(LO_TITLES[0]);
+        refreshLoRow();
       }
       refresh();
     };
     searchInp.oninput = renderResults;
-    refreshTitleNote();
+    refreshTitleNote(); refreshLoRow();
     gymChk.onchange = function () { pushUndo("gym"); s.isGym = gymChk.checked; if (s.isGym) { s.ficheContentId = null; s.ficheTitle = ""; searchInp.value = ""; } refreshTitleNote(); renderTimetable(); };
 
     var modal = h("div", { class: "qwp-modal", id: "qwp-modal" }, [
       h("div", { class: "qwp-modal-box" }, [
         h("div", { class: "qwp-modal-hd", text: (s.title || "Lesuur") + " · " + DAY_NAMES[s.dayIdx] + " " + (s.time || "") + " · week " + (s.weekIdx + 1) }),
         h("div", { class: "qwp-modal-body" }, [
-          h("div", { class: "qwp-field" }, [h("label", { text: "Titel" }), titleInp, titleNote]),
+          h("div", { class: "qwp-field" }, [h("label", { text: "Titel" }), titleInp, loRow, titleNote]),
           h("div", { class: "qwp-field" }, [h("label", { text: "Vak" }), vakSel]),
           h("div", { class: "qwp-field" }, [h("label", { text: "Lesfiche (titel / zoeken)" }), searchInp]),
           h("div", { class: "qwp-field" }, [results]),
@@ -2412,14 +2487,14 @@
   function emptySlotsForVak(vakTagIdArg) {
     return view.slots.filter(function (s) {
       if (!s.isEditable || s.idCalendar === "cal_holidays") return false;
-      if (s.ficheContentId || s.isGym || s.themaFiche || isThemaTitle(s.title)) return false;
+      if (s.ficheContentId || s.isGym) return false;
       if (isNoSchool(s.dayIdx, s.time)) return false;
       var stdVak = state.settings[slotKeyStd(s.dayIdx, s.time)];
       return stdVak ? String(stdVak) === String(vakTagIdArg) : true;
     }).sort(function (a, b) { return (a.weekIdx - b.weekIdx) || (a.dayIdx - b.dayIdx) || String(a.time).localeCompare(String(b.time)); });
   }
   function allEmptySlots() {
-    return view.slots.filter(function (s) { return s.isEditable && s.idCalendar !== "cal_holidays" && !s.ficheContentId && !s.isGym && !s.themaFiche && !isThemaTitle(s.title) && !isNoSchool(s.dayIdx, s.time); })
+    return view.slots.filter(function (s) { return s.isEditable && s.idCalendar !== "cal_holidays" && !s.isFullday && !s.ficheContentId && !s.isGym && !isNoSchool(s.dayIdx, s.time); })
       .sort(function (a, b) { return (a.weekIdx - b.weekIdx) || (a.dayIdx - b.dayIdx) || String(a.time).localeCompare(String(b.time)); });
   }
   function slotLabel(s) { return "(wk " + (s.weekIdx + 1) + ") - " + DAY_NAMES[s.dayIdx].toLowerCase() + " - " + (s.time || ""); }
@@ -2900,9 +2975,15 @@
       return { expected: "gedeelde tijd-as", found: "rijen:" + view.timeRows.length + " · per dag: " + perDay.join("/") + (Object.keys(view.rowMeta || {}).length ? " · pauzes afgeleid" : "") };
     }));
     checks.push(wrap("Thema/gym classificatie", "sanity", function () {
-      var th = [], gy = [];
-      view.slots.forEach(function (s) { if (isThemaTitle(s.title) || s.themaFiche) th.push(s.title); else if (isGymTitle(s.title)) gy.push(s.title); });
-      return { expected: "zichtbaar ter controle", found: "thema:" + th.length + " gym:" + gy.length + (gy.length ? " (" + gy.slice(0, 3).join(", ") + ")" : "") };
+      // Report what the planner ACTUALLY classifies on (identity + vak), not what the title
+      // happens to say — otherwise this row contradicts the grid.
+      var bands = [], th = [], gy = [];
+      view.slots.forEach(function (s) {
+        if (isThemaSlot(s)) bands.push(s.origTitle);
+        else if (s.themaFiche) th.push(s.title);
+        else if (s.isGym) gy.push(s.title);
+      });
+      return { expected: "zichtbaar ter controle", found: "themabalken:" + bands.length + " thema-lesuren:" + th.length + " gym:" + gy.length + (gy.length ? " (" + gy.slice(0, 3).join(", ") + ")" : "") };
     }));
 
     // Run sequentially.
@@ -2981,13 +3062,19 @@
     ]);
     els.page.appendChild(modal);
   }
-  function reloadSlotVakLabels() { view.slots.forEach(function (s) { var v = state.settings[slotKeyStd(s.dayIdx, s.time)]; if (v && !s.ficheContentId) s.vak = v; }); }
+  function reloadSlotVakLabels() {
+    view.slots.forEach(function (s) {
+      var v = state.settings[slotKeyStd(s.dayIdx, s.time)];
+      if (v && !s.ficheContentId) s.vak = v;
+      if (!s.isFullday && isThemaVak(s.vak)) s.themaFiche = true;
+    });
+  }
 
   // ---------- Kopieer vorige week (opt-in, per-item) ----------
   // Current-week schedulable slot for a given weekday+time (first match, week 0).
   function currentSlotForDayTime(dayIdx, time) {
     return view.slots.filter(function (s) {
-      if (s.idCalendar === "cal_holidays" || s.isFullday || isThemaTitle(s.title) || s.themaFiche) return false;
+      if (s.idCalendar === "cal_holidays" || s.isFullday) return false;
       return s.dayIdx === dayIdx && (s.time || (s.starttime ? String(s.starttime).slice(0, 5) : "")) === time;
     }).sort(function (a, b) { return a.weekIdx - b.weekIdx; })[0] || null;
   }
@@ -2998,7 +3085,7 @@
     var prevStart = isoDate(addDays(view.weekStart, -span)), prevEnd = isoDate(addDays(view.weekStart, -1));
     setStatus("Vorige week laden…");
     hydrateRange(prevStart, prevEnd).then(function (prev) {
-      var filled = prev.filter(function (s) { return s.idCalendar !== "cal_holidays" && !s.isFullday && !isThemaTitle(s.title) && (s.ficheContentId || s.isGym); })
+      var filled = prev.filter(function (s) { return s.idCalendar !== "cal_holidays" && !s.isFullday && (s.ficheContentId || s.isGym); })
         .sort(function (a, b) { return (a.dayIdx - b.dayIdx) || String(a.time).localeCompare(String(b.time)); });
       if (!filled.length) { setStatus("Vorige week had geen ingevulde lesuren."); return; }
       var rows = filled.map(function (ps) {
@@ -3156,7 +3243,7 @@
     var title = mode === "old" ? s.origTitle : s.title;
     var fiche;
     if (mode === "old") fiche = s.origFicheTitle || (stripHtml(s.origDescription) === "Zie themafiche." ? "Zie themafiche." : "");
-    else fiche = s.isGym ? "(gym)" : ((s.themaFiche || isThemaTitle(s.title)) ? "Zie themafiche." : (s.ficheTitle || ""));
+    else fiche = s.isGym ? "(gym)" : ((s.themaFiche || isThemaSlot(s)) ? "Zie themafiche." : (s.ficheTitle || ""));
     var overwrote = mode === "new" && s.origFicheContentId && s.ficheContentId && String(s.origFicheContentId) !== String(s.ficheContentId);
     return h("div", { class: "qwp-rv-cellbody" }, [
       h("div", { class: "qwp-cell-title", text: (overwrote ? "⚠ " : "") + (title || "(leeg)") }),

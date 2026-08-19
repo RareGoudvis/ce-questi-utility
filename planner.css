@@ -485,3 +485,9 @@ html.qwp-locked, html.qwp-locked body { overflow: hidden !important; }
 /* Attached fiche belongs to a different vak than the lesuur's Instellingen vak. */
 .qwp-cell.vakmismatch { box-shadow: inset 3px 0 0 var(--thema); }
 .qwp-vakwarn { margin-left:6px; font-size:10px; font-weight:700; color:var(--thema); background:var(--thema-weak); border:1px solid var(--thema-line); border-radius:999px; padding:0 6px; cursor:help; white-space:nowrap; }
+
+/* Slot popup: one-click titles for a Lichamelijke opvoeding lesuur (title only, no fiche). */
+.qwp-lorow { display:flex; gap:6px; margin-top:6px; flex-wrap:wrap; }
+.qwp-lobtn { border:1px solid var(--accent-line); background:var(--surface); color:var(--muted); border-radius:999px; padding:4px 11px; font-size:12px; font-weight:600; cursor:pointer; font-family:inherit; line-height:1.35; }
+.qwp-lobtn:hover { background:var(--accent-weak); }
+.qwp-lobtn.on { background:var(--accent); border-color:var(--accent); color:#fff; }

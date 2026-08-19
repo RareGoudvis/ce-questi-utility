@@ -16,6 +16,12 @@ ground-truth request/response captures live in `reference/questi-api-samples.md`
    Never hardcode an id, a tag id, or a user id.
 3. **No silent magic.** If something is guessed, degraded, skipped or fell back, the UI says so.
    Prefer a visible note over a clever inference.
+3b. **Never classify a slot by its live title.** `slot.title` is user-editable and is overwritten by
+   `assignFiche`, so any rule reading it is a bug waiting to happen. Use the stamped identity
+   (`isThemaSlot`, `s.themaFiche`, `s.isFullday`) or the slot's **vak tag**. `isThemaTitle` /
+   `isGymTitle` are bootstrap heuristics for `origTitle` at hydrate, or for TAG titles — nothing
+   else. Three shipped bugs came from ignoring this, the worst being a lesuur titled
+   "Godsdienst - Les 1" vanishing from the grid entirely because `slotAt` filtered it out.
 4. **Writes are gated.** Every mutation goes through a dry-run the user approves. Calendar writes
    are single-occurrence only (`apply_to_next_items=false`) — never touch a recurring series.
 5. **Light theme only.** All CSS namespaced under the module's overlay id.
@@ -160,6 +166,12 @@ Full-day items must not read `state.settings`: with no start time they all share
 `"<dayIdx>|"`, so their `vak` comes from `themaTagId`. A thema slot **keeps** `themaFiche` when it
 receives a fiche, so `descFor` goes on writing `"Zie themafiche."` — but the grid cell and the
 print band show the *fiche* title, not that literal.
+
+**Descriptions are published.** The teacher's class website renders the calendar description, so a
+WO/Godsdienst **lesuur** writes the week's themafiche *title* (via `themaFicheTitleFor`), falling
+back to the vak name when there is no themafiche that week. Only the whole-week **bar** keeps the
+literal `"Zie themafiche."`. A lesuur's `themaFiche` comes from its **vak tag** (`isThemaVak`), and
+such a lesuur may still receive its own fiche — `isTargetable` no longer excludes it.
 
 Layout: the 64px label column is **empty by design**. It once held the row label, and because grid
 rows are auto-height a wrapped lesson title there stretched the whole row. The thema name now sits
