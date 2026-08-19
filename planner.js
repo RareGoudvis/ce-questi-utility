@@ -271,16 +271,52 @@
   // The week the user is currently viewing in Questi — read from the most recent /cal/items request
   // Questi's own SPA fired (its `startdate` param = the viewed Monday). Locale/DOM-independent; falls
   // back to null when resource timing has nothing (→ callers use today's week).
+  //
+  // Three things this MUST NOT do, all of which it once did:
+  //  1. Match /cal/items/count — Questi's MONTH query. `indexOf("/cal/items")` is a substring test,
+  //     the count call fires after the week fetch so it won the "most recent" race, and mondayOf()
+  //     then rolled its 1st-of-the-month startdate back into the previous month. A live August
+  //     request produced a July week; that was the whole bug.
+  //  2. Accept a range that isn't a week. The span check below is the structural guard — a future
+  //     month/term-scoped endpoint cannot be mistaken for a week even if the path check slips.
+  //  3. Read our OWN fetches. apiItems hits the same endpoint (detectContext even fires one before
+  //     this runs), so they carry QWP_MARK and are skipped here.
+  var QWP_MARK = "qwp=1";
   function detectViewedWeekStart() {
     try {
       var best = null, bt = -1, es = performance.getEntriesByType("resource");
+      var todayMon = mondayOf(isoDate(new Date()));
       for (var i = 0; i < es.length; i++) {
-        var n = es[i].name || ""; if (n.indexOf("/cal/items") < 0) continue;
-        var m = /[?&]startdate=(\d{4}-\d{2}-\d{2})/.exec(n); if (!m) continue;
-        if (es[i].startTime > bt) { bt = es[i].startTime; best = m[1]; }
+        var n = es[i].name || "";
+        if (!/\/cal\/items\?/.test(n)) continue;          // the week endpoint only — not /count, not /{id}
+        if (n.indexOf(QWP_MARK) > -1) continue;             // our own request, not Questi's
+        var ms = /[?&]startdate=(\d{4}-\d{2}-\d{2})/.exec(n); if (!ms) continue;
+        var me = /[?&]enddate=(\d{4}-\d{2}-\d{2})/.exec(n);
+        // A viewed week spans at most 7 days (the planner itself may load 2 → allow 14).
+        if (me) {
+          var a = addDays(ms[1], 0), b = addDays(me[1], 0);
+          if (!a || !b) continue;
+          var days = Math.round((b - a) / 86400000);
+          if (days < 0 || days > 14) continue;
+        }
+        if (es[i].startTime > bt) { bt = es[i].startTime; best = ms[1]; }
       }
-      return best ? mondayOf(best) : null;
+      if (!best) return null;
+      var mon = mondayOf(best);
+      // Sanity: a viewed week a year away is not a view, it is a misread. Fall back to today.
+      if (mon && todayMon) {
+        var off = Math.round((addDays(mon, 0) - addDays(todayMon, 0)) / 604800000);
+        if (!isFinite(off) || Math.abs(off) > 60) return null;
+      }
+      return mon;
     } catch (e) { return null; }
+  }
+  // One resolved answer for BOTH the planner and print, so they can never open on different weeks.
+  // Returns { start, fromQuesti } — callers surface which rule fired instead of guessing silently.
+  function resolveOpenWeek() {
+    var vs = detectViewedWeekStart();
+    if (vs) return { start: vs, fromQuesti: true };
+    return { start: thisWeekRange().start, fromQuesti: false };
   }
 
   // Break the chicken-egg: Questi's own page already fired
@@ -407,7 +443,9 @@
   function apiItems(startISO, endISO, calendars) {
     // No schoolyear param — the live app omits it for calendar reads, and a
     // non-primitive value (current_schoolyear can be an object) 500s the call.
-    var q = { schoolId: ctx.schoolId, startdate: startISO, enddate: endISO };
+    // qwp:1 marks this as OUR read, so detectViewedWeekStart skips it and only ever sees
+    // requests Questi's own SPA fired. Questi ignores the unknown param.
+    var q = { schoolId: ctx.schoolId, startdate: startISO, enddate: endISO, qwp: 1 };
     if (calendars && calendars.length) q.calendars = calendars;
     return jget(API + "/items?" + qs(q)).then(function (j) { return (j && j.result) || []; });
   }
@@ -648,12 +686,46 @@
   // So: stamp a key ONCE, from origTitle (never mutated), resolved against the teacher's live
   // top-level tags. Rows then follow the tags — a third thema needs no code change.
   function normTitle(s) { return String(s == null ? "" : s).toLowerCase().replace(/\s+/g, " ").trim(); }
+  // Separator for the committed "<Thema> — <fiche>" title. An em dash with spaces: rare enough
+  // in fiche titles that a false split is unlikely, and the parse below is VALIDATED against the
+  // live tag list anyway, so a stray dash can never invent a thema.
+  var THEMA_SEP = " — ";
+  // Abbreviations that don't share a substring with the full tag title. Deliberately TIGHT:
+  // the old fallback reused VAKKEN[].re, whose wereldorientatie entry contains "thema" — so any
+  // fiche called "Thema 5 …" or "… Thema 'Vriendschap'" resolved to WO and two themafiches
+  // collapsed onto one row. That single word was the entire bug. Never widen this to a search regex.
+  var THEMA_ALIAS = [
+    { re: /WO|wereldori/i, vak: "wereldorientatie" },
+    { re: /godsdienst/i, vak: "godsdienst" }
+  ];
+  function topTagById(id) {
+    var tops = topTagsForOwner(ownTagsList(), ctx.ownerId) || [];
+    for (var i = 0; i < tops.length; i++) if (String(tops[i].id) === String(id)) return tops[i];
+    return null;
+  }
+  // A committed thema title starts with its tag title + separator. Only accept a prefix that
+  // matches a tag we actually know — never a blind split on the separator.
+  function themaTagFromPrefix(title) {
+    var t = normTitle(title); if (!t) return null;
+    var tops = topTagsForOwner(ownTagsList(), ctx.ownerId) || [];
+    // NB: normTitle() trims, which would strip the separator's spaces and never match.
+    // Collapse whitespace WITHOUT trimming so " — " stays " — ".
+    var sep = String(THEMA_SEP).toLowerCase().replace(/\s+/g, " ");
+    var best = null, bestLen = -1;
+    tops.forEach(function (tag) {
+      var n = normTitle(tag.title); if (!n) return;
+      if (t.indexOf(n + sep) !== 0) return;
+      if (n.length > bestLen) { best = tag; bestLen = n.length; }
+    });
+    return best;
+  }
   function themaTagFor(origTitle) {
     var t = normTitle(origTitle); if (!t) return null;
+    // 1. An explicit "<Thema> — <fiche>" prefix we wrote ourselves on a previous commit.
+    var pre = themaTagFromPrefix(origTitle); if (pre) return pre;
     var tops = topTagsForOwner(ownTagsList(), ctx.ownerId) || [];
-    // Containment either way, so "WO" matches the tag "Wereldoriëntatie" and an item titled
-    // "Godsdienst - hele week" matches the tag "Godsdienst". Longest tag title wins, so a
-    // short tag never shadows a more specific one.
+    // 2. Containment either way, so "Godsdienst - hele week" matches the tag "Godsdienst".
+    //    Longest tag title wins, so a short tag never shadows a more specific one.
     var best = null, bestLen = -1;
     tops.forEach(function (tag) {
       var n = normTitle(tag.title); if (!n) return;
@@ -661,26 +733,45 @@
       if (n.length > bestLen) { best = tag; bestLen = n.length; }
     });
     if (best) return best;
-    // Abbreviations don't share a substring with the full tag title ("WO" vs "Wereldoriëntatie"),
-    // so fall back to the canonical vak table, which already knows those aliases (VAKKEN.re) and
-    // is already mapped to the live tags by buildVakTagMap.
-    for (var i = 0; i < VAKKEN.length; i++) {
-      var v = VAKKEN[i];
-      if (!v.thema || !v.re || !v.re.test(origTitle || "")) continue;
-      var id = vakTagId(v.id); if (id == null) continue;
-      var hit = tops.filter(function (tag) { return String(tag.id) === String(id); })[0];
-      if (hit) return hit;
+    // 3. Tight aliases for abbreviations ("WO" → Wereldoriëntatie).
+    for (var i = 0; i < THEMA_ALIAS.length; i++) {
+      if (!THEMA_ALIAS[i].re.test(origTitle || "")) continue;
+      var id = vakTagId(THEMA_ALIAS[i].vak); if (id == null) continue;
+      var hit = topTagById(id); if (hit) return hit;
     }
     return null;
   }
+  // The fiche part of a committed thema title, i.e. everything after "<Thema> — ".
+  function stripThemaPrefix(title) {
+    var tag = themaTagFromPrefix(title); if (!tag) return title || "";
+    // The prefix is already validated, so the first em dash after it IS the separator.
+    var str = String(title || ""), cut = str.indexOf("—");
+    return cut > -1 ? str.slice(cut + 1).replace(/^\s+/, "") : str;
+  }
+  // Build the title to COMMIT for a thema slot. Idempotent — re-committing never doubles the
+  // prefix, because the incoming title is stripped of any prefix we already wrote.
+  function themaTitleFor(tagId, body) {
+    var label = tagId != null ? (anyTagTitle(tagId) || "").trim() : "";
+    body = stripThemaPrefix(body || "");
+    if (!label) return body;
+    if (!body) return label;
+    return label + THEMA_SEP + body;
+  }
+  function themaCommitTitle(s, ficheTitle) { return themaTitleFor(s.themaTagId, ficheTitle || s.title || ""); }
   // Stamp themaKey/themaTagId on a full-day slot. Idempotent; safe to call again after a reload.
+  // Priority: the recurring-series id (survives ANY rename) → tag resolved from origTitle
+  // (prefix, containment, alias) → the normalised title itself.
   function stampThemaKey(s) {
     if (!s || !s.isFullday || s.idCalendar === "cal_holidays") return s;
     var tag = themaTagFor(s.origTitle || s.title);
-    if (tag) { s.themaTagId = tag.id; s.themaKey = "tag:" + tag.id; }
-    // No matching tag (e.g. a schooluitstap): still give it its own row keyed on the title,
-    // rather than letting it silently take over the WO row as the old !gd catch-all did.
-    else { s.themaTagId = null; s.themaKey = "title:" + (normTitle(s.origTitle || s.title) || "?"); }
+    s.themaTagId = tag ? tag.id : null;
+    // A recurring whole-week thema keeps one id_repeat across every week, and Questi never
+    // rewrites it — so it identifies the series even after the title became a fiche title.
+    if (s.repeatId) { s.themaKey = "rep:" + s.repeatId; return s; }
+    if (tag) { s.themaKey = "tag:" + tag.id; return s; }
+    // No tag, no series (e.g. a schooluitstap): its own row, keyed and labelled by its title,
+    // rather than silently taking over another row.
+    s.themaKey = "title:" + (normTitle(s.origTitle || s.title) || "?");
     return s;
   }
   // Boot fires fetchOwnTags() and reloadWeek() in parallel, so hydrate may stamp before the tag
@@ -700,7 +791,12 @@
       var id = key.slice(4), t = (anyTagTitle(id) || "").trim();
       if (t) return t;
     }
-    for (var i = 0; i < (slots || []).length; i++) if (slots[i].themaKey === key) return (slots[i].origTitle || "").trim() || "Thema";
+    // "rep:" keys carry no tag in the key itself — read it off any slot in that row.
+    for (var i = 0; i < (slots || []).length; i++) {
+      var s2 = slots[i]; if (s2.themaKey !== key) continue;
+      if (s2.themaTagId != null) { var tt = (anyTagTitle(s2.themaTagId) || "").trim(); if (tt) return tt; }
+      return (stripThemaPrefix(s2.origTitle) || s2.origTitle || "").trim() || "Thema";
+    }
     return "Thema";
   }
   // Distinct thema keys across the given slots, ordered by the teacher's own tag order first
@@ -770,6 +866,9 @@
           itemId: it.id, title: it.title || "", origTitle: it.title || "",
           startdate: it.startdate, enddate: it.enddate,
           idCalendar: it.id_calendar, isFullday: !!it.is_fullday_item,
+          // Recurring-series id: stable across weeks AND across renames, so it is the strongest
+          // thema identity available. Questi returns it on /cal/items; we simply never kept it.
+          repeatId: it.id_repeat || null,
           dayIdx: day, weekIdx: (wk < 0 ? 0 : wk), time: timeFromISO(it.startdate),
           groups: (it.groups && it.groups.length) ? it.groups : writeGroups(),
           hasAtt: !!it.has_attachments, isEditable: it.is_editable !== false,
@@ -815,6 +914,9 @@
       var grps = writeGroupObjs(s.groups);
       // Questi rejects an empty title — keep a safe fallback for emptied slots.
       var title = s.title || "Lesuur";
+      // A whole-week thema commits as "<Thema> — <fiche>" so its identity survives in Questi
+      // itself, instead of being inferred from a title the fiche just overwrote.
+      if (isThemaSlot(s) && s.themaTagId != null) title = themaCommitTitle(s, s.title);
       var startDay = s.startdate ? String(s.startdate).slice(0, 10) : undefined;
       var hasFiche = !s.isGym && !!s.ficheContentId;
       var body;
@@ -845,6 +947,9 @@
         old: { title: s.origTitle, desc: s.origDescription, fiche: s.origFicheTitle || "(geen)" },
         neu: { title: s.title, desc: toHtmlDesc(nd), fiche: (s.isGym ? "(geen — gym)" : (s.ficheTitle || "(geen)")) },
         patchBody: body, range: range,
+        // Needed by doCommit: Questi's attachment response overwrites the title with its own
+        // decorated fiche title, which would drop the "<Thema> — " prefix we just built.
+        themaTagId: (isThemaSlot(s) && s.themaTagId != null) ? s.themaTagId : null,
         fiche: (!s.isGym && s.ficheContentId) ? { contentId: s.ficheContentId, groups: grps, isMethod: !!s.ficheIsMethod } : null
       };
     });
@@ -1129,10 +1234,15 @@
   function printCellParts(pv, s) {
     if (!s) return null;
     var thema = s.themaFiche || isThemaTitle(s.title);
-    var main = thema ? "Zie themafiche."
-      : (s.ficheTitle || (isLesuurPlaceholder(s.title) ? "" : (s.title || "")));
+    // A whole-week thema BAND must print the fiche it carries — "Zie themafiche." is the item
+    // description, useless on paper. Only a normal lesuur marked as thema falls back to it.
+    var main = (thema && !(isThemaSlot(s) && s.ficheTitle)) ? "Zie themafiche."
+      : (stripThemaPrefix(s.ficheTitle || "") || (isLesuurPlaceholder(s.title) ? "" : stripThemaPrefix(s.title || "")));
     var top = topTagIdOf(s.vak);
     var vak = top != null ? ((anyTagTitle(top) || "").trim()) : "";
+    // Carry the same warning onto paper — a mismatch you can only see on screen is half a warning.
+    var mm = vakMismatch(s);
+    if (mm) vak = (vak || "?") + " ≠ " + (mm.ficheVak || "?");
     var color = (pv && pv.ficheColor && s.ficheContentId && pv.ficheColor[s.ficheContentId]) ||
       (top != null ? (anyTagColor(top) || "") : "");
     return { vak: vak, main: main, color: color };
@@ -1387,6 +1497,49 @@
   // Resolve each printed fiche's OWN subject colour (its tag's set colour) → pv.ficheColor map.
   // Own fiches via /lessons/{id}?return_format=edit → tags[]; colleague/method/gym → neutral.
   var _ficheColorCache = {};   // contentId → "#hex" | "" (cached across nav to avoid refetch)
+  // contentId → top-tag id | null (= known to have no resolvable vak) | undefined (= not looked up).
+  // Separate from the colour cache on purpose: colorFromTagList drops tags that have no colour set,
+  // which would silently discard a perfectly valid vak.
+  var _ficheVakCache = {};
+  function vakFromTagList(tags) {
+    for (var i = 0; i < (tags || []).length; i++) {
+      var t = tags[i], tid = (t && t.id != null) ? t.id : t;
+      var top = topTagIdOf(tid);
+      if (top != null) return top;
+    }
+    return null;
+  }
+  // Fill _ficheVakCache for every attached fiche in `slots`, then run `done`. Deliberately fired
+  // AFTER the grid paints, so a week never waits on it — the flags just appear a beat later.
+  function resolveFicheVakken(slots, done) {
+    var todo = {};
+    (slots || []).forEach(function (s2) {
+      if (!s2.ficheContentId || s2.isGym) return;
+      // Methode fiches answer 1235 "no access to lesson" — proven by the Zelftest probe. Their vak
+      // is unknowable, so mark them null and never spend a request (or show a false mismatch).
+      if (s2.ficheIsMethod || view.methodFicheIds[String(s2.ficheContentId)]) { _ficheVakCache[s2.ficheContentId] = null; return; }
+      if (s2.ficheContentId in _ficheVakCache) return;
+      todo[s2.ficheContentId] = true;
+    });
+    var ids = Object.keys(todo);
+    if (!ids.length) { if (done) done(false); return Promise.resolve(false); }
+    return Promise.all(ids.map(function (id) {
+      return ficheEditTags(id)
+        .then(function (tags) { _ficheVakCache[id] = vakFromTagList(tags); })
+        // A colleague fiche we may not read is "unknown", never a mismatch.
+        .catch(function () { _ficheVakCache[id] = null; });
+    })).then(function () { if (done) done(true); return true; });
+  }
+  // null = cannot say (unknown fiche vak, or no vak set on the slot). Only a definite
+  // disagreement between two KNOWN vakken counts — no crying wolf.
+  function vakMismatch(s2) {
+    if (!s2 || !s2.ficheContentId || s2.isGym) return null;
+    var fv = _ficheVakCache[s2.ficheContentId];
+    if (fv == null) return null;
+    var sv = topTagIdOf(s2.vak);
+    if (sv == null || String(sv) === String(fv)) return null;
+    return { ficheVak: (anyTagTitle(fv) || "").trim(), slotVak: (anyTagTitle(sv) || "").trim() };
+  }
   function ficheEditTags(id) {
     return jget(API + "/lessons/" + id + "?" + qs({ schoolId: ctx.schoolId, return_format: "edit" }))
       .then(function (j) { var r = (j && j.result) || j; return (r && r.tags) || []; }).catch(function () { return []; });
@@ -1446,7 +1599,9 @@
       });
       var r = computeRowsFrom(slots);
       var pv = { slots: slots, weekStart: startISO, weeks: weeks, timeRows: r.timeRows, rowMeta: r.rowMeta, presence: r.presence, ficheColor: {} };
-      return buildFicheColors(pv);   // resolve each fiche's own subject colour, then hand back pv
+      // Resolve fiche colours AND fiche vakken — print must show the same mismatch warnings the
+      // grid does, and it renders once with no chance to repaint later.
+      return resolveFicheVakken(pv.slots).then(function () { return buildFicheColors(pv); });
     });
   }
   // Ensure context + tag lists are available for a headless print (trimmed loadEverything).
@@ -1481,7 +1636,7 @@
     if (document.getElementById("qwp-print-overlay")) { document.getElementById("qwp-print-overlay").classList.add("qwp-show"); return; }
     printToast("Weekplanning laden…");
     ensurePrintData().then(function () {
-      var start = detectViewedWeekStart() || thisWeekRange().start;   // Questi's viewed week, else today
+      var ow = resolveOpenWeek(), start = ow.start;   // same resolver as the planner — never a different week
       var weeks = state.weeks || 1;
       return fetchPrintView(start, weeks).then(function (pv) { hideToast(); openPrintOverlay(pv); });
     }).catch(function (e) {
@@ -1749,10 +1904,18 @@
     if (targetable) cls += " slot-empty";
     if (targetable && isTarget(s.itemId)) cls += " target";
 
-    var fiche = s.isGym ? "Enkel titel (gym)" : thema ? "Zie themafiche."
+    // Same rule as print: a thema BAND shows the fiche it carries; only a fiche-less one falls
+    // back to the description literal.
+    var fiche = s.isGym ? "Enkel titel (gym)"
+      : (isThemaSlot(s) && s.ficheTitle) ? stripThemaPrefix(s.ficheTitle)
+      : thema ? "Zie themafiche."
       : (s.ficheTitle || (s.origFicheTitle ? ("was: " + s.origFicheTitle) : "Klik of sleep om te kiezen"));
     // No status pills — color conveys state (see sidebar legend). s.vak = live tag id.
     var vakLbl = s.vak ? ((tagTitle("self", s.vak) || "").trim()) : "";
+    // The sub-label is the lesuur's OWN vak (Instellingen), not the fiche's. When the attached
+    // fiche belongs to a different vak, say so instead of quietly showing the wrong subject.
+    var mism = vakMismatch(s);
+    if (mism) cls += " vakmismatch";
 
     // Targetable empty slot: single click toggles it as a mass-add target;
     // double click opens the popup. Filled/gym/thema: single click opens popup.
@@ -1779,7 +1942,14 @@
         } catch (err) {}
       }
     }, [
-      vakLbl ? h("div", { class: "qwp-cell-top" }, [h("span", { class: "qwp-cell-vak", text: vakLbl })]) : null,
+      (vakLbl || mism) ? h("div", { class: "qwp-cell-top" }, [
+        h("span", { class: "qwp-cell-vak", text: vakLbl }),
+        mism ? h("span", {
+          class: "qwp-vakwarn",
+          title: "Fiche hoort bij " + (mism.ficheVak || "?") + " · dit lesuur staat ingesteld als " + (mism.slotVak || "?"),
+          text: "≠ " + (mism.ficheVak || "?")
+        }) : null
+      ]) : null,
       h("div", { class: "qwp-cell-title", text: s.title || "(leeg)" }),
       h("div", { class: "qwp-cell-fiche", text: fiche })
     ]);
@@ -1831,6 +2001,37 @@
     var vakSel = h("select", { class: "qwp-input", id: "qwp-pop-vak" },
       [h("option", { value: "", text: "— kies vak —" })].concat(tops.map(function (t) { return h("option", { value: t.id, text: (t.title || "").trim(), selected: (String(curTagId) === String(t.id) ? "selected" : null) }); })));
     var searchInp = h("input", { class: "qwp-input", id: "qwp-pop-search", placeholder: "Zoek in eigen lesfiches…", value: (s.ficheTitle || "") });
+
+    // Editable title — for things that must be planned in but need no fiche (toets, uitstap).
+    // computeDirty/buildCommitPlan/doCommit already handle a title-only change: it becomes a single
+    // PATCH with no attachment. `title` is in the undo snapshot, so Ctrl+Z works for free.
+    var titleOrig = s.title || "";
+    var titleInp = h("input", { class: "qwp-input", id: "qwp-pop-title", placeholder: "Titel van dit lesuur", value: titleOrig });
+    var titleNote = h("div", { class: "qwp-pop-note" });
+    function refreshTitleNote() {
+      // Questi's attachment POST answers with its OWN decorated fiche title, and doCommit adopts
+      // it — so on a slot WITH a fiche a hand-typed title does not survive the write. Say so
+      // rather than let it silently vanish.
+      var hasFiche = !s.isGym && !!s.ficheContentId;
+      titleNote.textContent = hasFiche
+        ? "Let op: deze les heeft een lesfiche — bij het wegschrijven zet Questi de fichetitel terug."
+        : "";
+      titleNote.style.display = hasFiche ? "" : "none";
+    }
+    var titleDirty = false;
+    function applyTitle() {
+      var nv = titleInp.value;
+      if (nv === (s.title || "")) return;
+      if (!titleDirty) { pushUndo("titel"); titleDirty = true; }
+      s.title = nv;
+      renderTimetable();
+    }
+    titleInp.addEventListener("keydown", function (e) {
+      e.stopPropagation();
+      if (e.key === "Enter") { applyTitle(); titleInp.blur(); }
+      else if (e.key === "Escape") { titleInp.value = titleOrig; applyTitle(); titleInp.blur(); }
+    });
+    titleInp.addEventListener("blur", applyTitle);
     var results = h("div", { class: "qwp-results", id: "qwp-pop-results" });
     var gymChk = h("input", { type: "checkbox" }); if (s.isGym) gymChk.checked = true;
 
@@ -1845,7 +2046,13 @@
       items.sort(function (a, b) { return (a.subject || "").localeCompare(b.subject || "", undefined, { numeric: true }); });
       items.slice(0, 300).forEach(function (f) {
         results.appendChild(h("div", {
-          class: "qwp-result", onclick: function () { pushUndo("fiche toewijzen"); assignFiche(s, f); s.vak = (curTagId != null ? curTagId : (s.vak || "")); searchInp.value = f.subject || ""; renderTimetable(); setStatus("Toegewezen: " + (f.subject || "")); }
+          class: "qwp-result", onclick: function () {
+            pushUndo("fiche toewijzen"); assignFiche(s, f); s.vak = (curTagId != null ? curTagId : (s.vak || ""));
+            searchInp.value = f.subject || "";
+            // assignFiche rewrote the title — keep the visible field truthful.
+            titleInp.value = s.title || ""; titleOrig = s.title || ""; titleDirty = false; refreshTitleNote();
+            renderTimetable(); setStatus("Toegewezen: " + (f.subject || ""));
+          }
         }, [h("span", { class: "qwp-result-t", text: f.subject || "(zonder titel)" }), usedThisYear(f) ? h("span", { class: "qwp-used", text: "gebruikt" }) : null]));
       });
       if (!items.length) results.appendChild(h("div", { class: "qwp-result", text: noVak ? "Geen fiches gevonden." : "Geen fiches in dit vak." }));
@@ -1863,12 +2070,14 @@
       refresh();
     };
     searchInp.oninput = renderResults;
-    gymChk.onchange = function () { pushUndo("gym"); s.isGym = gymChk.checked; if (s.isGym) { s.ficheContentId = null; s.ficheTitle = ""; searchInp.value = ""; } };
+    refreshTitleNote();
+    gymChk.onchange = function () { pushUndo("gym"); s.isGym = gymChk.checked; if (s.isGym) { s.ficheContentId = null; s.ficheTitle = ""; searchInp.value = ""; } refreshTitleNote(); renderTimetable(); };
 
     var modal = h("div", { class: "qwp-modal", id: "qwp-modal" }, [
       h("div", { class: "qwp-modal-box" }, [
         h("div", { class: "qwp-modal-hd", text: (s.title || "Lesuur") + " · " + DAY_NAMES[s.dayIdx] + " " + (s.time || "") + " · week " + (s.weekIdx + 1) }),
         h("div", { class: "qwp-modal-body" }, [
+          h("div", { class: "qwp-field" }, [h("label", { text: "Titel" }), titleInp, titleNote]),
           h("div", { class: "qwp-field" }, [h("label", { text: "Vak" }), vakSel]),
           h("div", { class: "qwp-field" }, [h("label", { text: "Lesfiche (titel / zoeken)" }), searchInp]),
           h("div", { class: "qwp-field" }, [results]),
@@ -3003,7 +3212,13 @@
       // THEN PATCH to add description=vak — reusing that decorated title so we don't clobber
       // it with our plain one. (No-fiche rows carry attachments:[] to detach.)
       (p.fiche ? ((p.fiche.isMethod || view.methodFicheIds[String(p.fiche.contentId)]) ? postMethodAttachment(p.itemId, p.fiche.contentId, p.fiche.groups) : postAttachment(p.itemId, p.fiche.contentId, p.fiche.groups)) : Promise.resolve(null))
-        .then(function (res) { var t = res && res.result && res.result.title; if (t) p.patchBody.title = t; return patchItem(p.itemId, p.patchBody, p.range); })
+        .then(function (res) {
+          var t = res && res.result && res.result.title;
+          // Re-apply the thema prefix to Questi's decorated title — taking it raw here is what
+          // would make the whole durable-identity fix a no-op.
+          if (t) p.patchBody.title = (p.themaTagId != null) ? themaTitleFor(p.themaTagId, t) : t;
+          return patchItem(p.itemId, p.patchBody, p.range);
+        })
         .then(function () { ok++; })
         // Continue on error. A gateway timeout (504 …) usually still lands → re-read + verify
         // instead of hard-failing; only a mismatch is reported as uncertain.
@@ -3056,7 +3271,13 @@
     setStatus("Rooster laden…");
     return hydrateRange(wr.start, wr.end).then(function (slots) { view.slots = slots; reloadSlotVakLabels(); });
   }
-  function reloadAndRender() { return reloadWeek().then(function () { renderTimetable(); setStatus("Rooster geladen."); }); }
+  function reloadAndRender() {
+    return reloadWeek().then(function () {
+      renderTimetable(); setStatus("Rooster geladen.");
+      // Then, without blocking the paint, find out which fiches disagree with their lesuur's vak.
+      resolveFicheVakken(view.slots, function (changed) { if (changed) renderTimetable(); });
+    });
+  }
 
   // ---------- Boot / toggle ----------
   function show() { if (els.root) els.root.classList.add("qwp-show"); document.documentElement.classList.add("qwp-locked"); }
@@ -3237,9 +3458,14 @@
       if (!ctx.schoolId) { showContextError(); return; }
       // Open on the week the user is viewing in Questi (else today): seed weekOffset before the
       // first reloadWeek so currentWeekRange() lands on it. Nav buttons work from this base.
-      var vs = detectViewedWeekStart(), todayMon = mondayOf(isoDate(new Date()));
-      if (vs && todayMon) view.weekOffset = Math.round((addDays(vs, 0) - addDays(todayMon, 0)) / 604800000);
-      return loadEverything();
+      var ow = resolveOpenWeek(), todayMon = mondayOf(isoDate(new Date()));
+      if (ow.fromQuesti && todayMon) view.weekOffset = Math.round((addDays(ow.start, 0) - addDays(todayMon, 0)) / 604800000);
+      else view.weekOffset = 0;
+      view.weekFromQuesti = ow.fromQuesti;
+      return loadEverything().then(function () {
+        // Say which rule picked the week — the fallback is the common path, not an error.
+        setStatus(ow.fromQuesti ? "Week overgenomen uit Questi." : "Week van vandaag geladen.");
+      });
     }).catch(function (e) { console.error("[QWP] boot error:", e); setStatus("Laadfout — probeer 'Vernieuwen'."); });
   }
   window.__QWP_PRINT = printCurrentWeek;

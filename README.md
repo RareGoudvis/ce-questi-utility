@@ -63,8 +63,9 @@ De knoppen verschijnen **enkel op de kalenderpagina**. Sluiten doe je met het **
 
 ## De weekplanner gebruiken
 
-1. **Kies je week.** In de bovenbalk (naast de zoekbalk) kies je *1 week* of *2 weken* en blader
-   je met **← / Deze week / →**.
+1. **Kies je week.** De planner opent op de week die je in Questi bekijkt; lukt dat niet, dan op de
+   week van vandaag (de statusregel zegt welke van de twee). In de bovenbalk (naast de zoekbalk)
+   kies je *1 week* of *2 weken* en blader je met **← / Deze week / →**.
 2. **Zoek lesfiches.** Onderaan staan filterpanelen: kies een vak, verfijn met de sub-tags
    (blok 1, blok 2 …) of gebruik de zoekbalk. Via **Lesfiches laden** (links) laad je je
    **Eigen lesfiches**, die van **Collega's**, of **Methodes** (uitgeverij-fiches — die krijgen
@@ -87,11 +88,23 @@ De knoppen verschijnen **enkel op de kalenderpagina**. Sluiten doe je met het **
 
 - **Niets wordt geschreven** tot je goedkeurt; tot dan blijft alles enkel in de planner staan.
 - Wijzigingen gelden **enkel voor die ene week** (herhalende reeksen blijven ongemoeid).
+- **Titel aanpassen.** In het lesuur-venster staat bovenaan een veld **Titel**. Handig voor dingen
+  die ingepland moeten worden maar geen lesfiche nodig hebben (een toets, een uitstap): typ een
+  titel, kies geen fiche, en schrijf weg. Zit er wél een fiche aan het lesuur, dan waarschuwt het
+  venster: Questi zet bij het wegschrijven de fichetitel terug.
+- **Vak klopt niet met de fiche?** Het label onder een les is het vak dat jij voor dat lesuur in
+  **Instellingen** hebt gezet. Hoort de gekoppelde fiche bij een ànder vak, dan krijgt de cel een
+  oranje randje en een label als "≠ Wiskunde" — zo zie je meteen dat er een rekenles in een
+  taal-uur staat. Bij methodefiches kan het vak niet opgehaald worden; die krijgen dus nooit een
+  waarschuwing (liever geen melding dan een verkeerde).
 - **Themarijen** (hele-week-items zoals WO en Godsdienst) staan bovenaan het rooster, elk op een
   **eigen rij** met de naam van je eigen tag. Heb je er drie (bv. ook MUVO), dan krijg je er drie —
   ze worden afgeleid uit je tags, niet uit een vaste lijst. Een hele-dag-item dat bij geen enkele
-  tag hoort (bv. een schooluitstap) krijgt een eigen rij met zijn eigen titel. Bij een themarij
-  blijft de beschrijving in Questi altijd `"Zie themafiche."`.
+  tag hoort (bv. een schooluitstap) krijgt een eigen rij met zijn eigen titel.
+  Bij het wegschrijven krijgt zo'n item de titel `"Godsdienst — <fichetitel>"`: zo weet de planner
+  ook na een herlaadbeurt nog welk thema het is (voordien raakte dat kwijt zodra je er een fiche in
+  legde, en verdween er één van de twee rijen). De beschrijving in Questi blijft
+  `"Zie themafiche."`.
 - **Instellingen** (vast vak per lesuur) blijft bewaard en geldt voor elke week.
 - **Diagnose** (links onderaan) draait een zelftest als er iets niet automatisch gevonden werd.
 

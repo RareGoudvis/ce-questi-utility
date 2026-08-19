@@ -136,15 +136,37 @@ the teacher's per-timeslot tag mapping from `state.settings`. Commit path is
 `buildCommitPlan` → review diff → `doCommit`. Ctrl+Z undo stack, cap 30.
 
 **Thema rows** (whole-week full-day items: WO, Godsdienst, …). One row per distinct `themaKey`,
-so a third thema needs no code change. The key is stamped **once from `origTitle`** by
-`stampThemaKey` and resolved against the live top tags (with `VAKKEN[].re` bridging abbreviations
-like "WO" → *Wereldoriëntatie*); unmatched items get `"title:<normalised>"` and their own labelled
-row. **Never key a thema row off `slot.title`** — `assignFiche` overwrites it with the fiche title,
-which is exactly how two themafiches once collapsed into one row. `ensureThemaKeys` re-stamps
-before each render because boot fetches tags and the week in parallel. Full-day items must not read
-`state.settings`: with no start time they all share the key `"<dayIdx>|"`, so their `vak` comes from
-`themaTagId`. A thema slot **keeps** `themaFiche` when it receives a fiche, so `descFor` goes on
-writing `"Zie themafiche."`.
+so a third thema needs no code change. **Identity must survive a commit**, because the commit
+rewrites the item title to the fiche title (`assignFiche`, and again from the attachment POST
+response in `doCommit`). `stampThemaKey` therefore resolves, in order: `repeatId` (`id_repeat`,
+stable across weeks and immune to renames) → the `"<Thema> — <fiche>"` prefix we write on commit,
+validated against the live tag list → tag resolution from `origTitle` → `"title:<normalised>"`.
+
+Two traps, both of which shipped as bugs:
+- **Never key a thema row off `slot.title`** — it becomes the fiche title.
+- **Never widen `THEMA_ALIAS`.** It once reused `VAKKEN[].re`, whose wereldoriëntatie entry contains
+  the word `thema`, so *any* fiche called "Thema …" resolved to WO and two themafiches collapsed
+  onto one row. `VAKKEN[].re` is a fiche-title **search** regex, not an identity rule.
+
+`doCommit` must re-apply the prefix to Questi's decorated title (`themaTitleFor`), or the prefix
+never reaches the server. `themaCommitTitle`/`stripThemaPrefix` keep it idempotent.
+`ensureThemaKeys` re-stamps before each render because boot fetches tags and the week in parallel.
+Full-day items must not read `state.settings`: with no start time they all share the key
+`"<dayIdx>|"`, so their `vak` comes from `themaTagId`. A thema slot **keeps** `themaFiche` when it
+receives a fiche, so `descFor` goes on writing `"Zie themafiche."` — but the grid cell and the
+print band show the *fiche* title, not that literal.
+
+**Opening week.** `detectViewedWeekStart` reads Questi's own `/cal/items` requests out of the
+performance timeline. It must match `/cal/items?` **only** (`/cal/items/count` is a MONTH query —
+matching it made `mondayOf` roll 1 Aug back to 27 Jul, i.e. a live August request produced a July
+week), require a week-shaped range, skip our own reads (marked `qwp=1` by `apiItems`), and sanity-
+check the distance from today. `resolveOpenWeek()` is the single answer used by both the planner
+and print, and the status line says which rule fired.
+
+**Vak mismatch.** The cell sub-label is the lesuur's own vak from `state.settings`, not the fiche's.
+`resolveFicheVakken` fills `_ficheVakCache` **after** the grid paints and repaints, and
+`vakMismatch` flags only a disagreement between two KNOWN vakken. Methode fiches answer `1235` on
+`/cal/lessons/{id}`, so they are cached as unknown without a request and never flagged.
 
 **Lesfiche-manager.** Edits are *staged* into `mgr.pending` and only written through the
 "Wijzigingen controleren" gate. Tag catalog CRUD writes immediately. Bulk delete is guarded by a

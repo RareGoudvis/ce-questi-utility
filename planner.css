@@ -476,3 +476,9 @@ html.qwp-locked, html.qwp-locked body { overflow: hidden !important; }
   .qwp-main .qwp-side { position:absolute; z-index:20; top:0; bottom:0; left:0; box-shadow:2px 0 12px rgba(0,0,0,.18); }
   .qwp-main { position:relative; }
 }
+
+/* Slot popup: note under the editable title (only shown when a fiche would override it). */
+.qwp-pop-note { margin-top:6px; font-size:11.5px; line-height:1.45; color:var(--thema); background:var(--thema-weak); border:1px solid var(--thema-line); border-radius:var(--radius-sm); padding:6px 9px; }
+/* Attached fiche belongs to a different vak than the lesuur's Instellingen vak. */
+.qwp-cell.vakmismatch { box-shadow: inset 3px 0 0 var(--thema); }
+.qwp-vakwarn { margin-left:6px; font-size:10px; font-weight:700; color:var(--thema); background:var(--thema-weak); border:1px solid var(--thema-line); border-radius:999px; padding:0 6px; cursor:help; white-space:nowrap; }
