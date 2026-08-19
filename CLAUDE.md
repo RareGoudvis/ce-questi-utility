@@ -204,6 +204,14 @@ ones; rows are sorted by block rank so a thema is never split. Only the teacher'
 persist; titles and dates are re-fetched live every open. Note Questi rolls `schoolyear` in summer,
 so between the roll and 1 September nothing counts as given — hence the explicit year picker.
 
+**Gym / LO.** `s.isGym` means "title only, no fiche": `descFor` returns null (empty description),
+the commit sends `attachments: []`, and the slot is excluded from targeting. The trigger is the
+**gym checkbox** in the slot popup — this account has no "Lichamelijke opvoeding" TAG, so a
+vak-based trigger is unreachable (that shipped once and did nothing). Ticking titles the slot from
+`LO_TITLES`; unticking restores the pre-tick title rather than blanking it, because an empty title
+commits as the `"Lesuur"` fallback. `GYM_RE` **must** match every title the planner itself writes
+(hence `lichamelijke`), or hydrate re-reads the slot as non-gym and the flag is lost on reload.
+
 **Zelftest** (`planner.js` `runDiagnostics`, smaller twin in `lessons.js`). Strictly read-only.
 Compares live responses against captured shapes and emits OK/WARN/FAIL/SKIP rows with
 `expected`/`found`/`next`, copyable as plain text. **When you add a feature that depends on an API

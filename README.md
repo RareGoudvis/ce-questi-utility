@@ -88,10 +88,12 @@ De knoppen verschijnen **enkel op de kalenderpagina**. Sluiten doe je met het **
 
 - **Niets wordt geschreven** tot je goedkeurt; tot dan blijft alles enkel in de planner staan.
 - Wijzigingen gelden **enkel voor die ene week** (herhalende reeksen blijven ongemoeid).
-- **Lichamelijke opvoeding.** Zet je het **Vak** van een lesuur op Lichamelijke opvoeding, dan krijgt
-  het meteen die titel en wordt het als gymles gemarkeerd (geen lesfiche nodig). Onder het titelveld
-  staan twee knoppen — **Lichamelijke opvoeding** en **Zwemmen** — om te wisselen. Hangt er al een
-  lesfiche aan, dan blijft die staan.
+- **Lichamelijke opvoeding / zwemmen.** Vink in het lesuur-venster **"Lichamelijke opvoeding /
+  zwemmen"** aan: het lesuur krijgt meteen de titel *Lichamelijke opvoeding* en er wordt geen
+  lesfiche gekoppeld. Onder het titelveld verschijnen twee knoppen — **Lichamelijke opvoeding** en
+  **Zwemmen** — om te wisselen. Vink je het weer uit, dan komt de oude titel terug (bv. "M3").
+  Een titel die je zelf typte blijft staan. De knoppen verschijnen bij elk gymuur, ook bij lesuren
+  die Questi al zo noemt.
 - **Titel aanpassen.** In het lesuur-venster staat bovenaan een veld **Titel**. Handig voor dingen
   die ingepland moeten worden maar geen lesfiche nodig hebben (een toets, een uitstap): typ een
   titel, kies geen fiche, en schrijf weg. Zit er wél een fiche aan het lesuur, dan waarschuwt het

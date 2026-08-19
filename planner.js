@@ -674,7 +674,11 @@
   }
 
   // ---------- Domain helpers ----------
-  var GYM_RE = /\b(LO|zwemmen|gym|turnen|L\.O\.)\b/i;
+  // Must also match the title the planner itself writes for a gym lesuur ("Lichamelijke
+  // opvoeding"), or hydrate re-reads that slot as NON-gym and the flag is lost on every reload.
+  // "L.O." needs its own alternative WITHOUT a trailing \b: a word boundary after "." requires a
+  // word character next, so /\bL\.O\.\b/ never matches "L.O." at the end of a title.
+  var GYM_RE = /\b(LO|zwemmen|gym|turnen)\b|\bL\.\s?O\.|lichamelijke/i;
   var THEMA_RE = /\b(WO|wereldori|godsdienst)\b/i;
   function isGymTitle(t) { return GYM_RE.test(t || ""); }
   // BOOTSTRAP HEURISTIC ONLY — never a live rule. It must be applied to a title the USER cannot
@@ -689,15 +693,8 @@
     var top = topTagIdOf(tagId);
     return top != null && THEMA_RE.test((anyTagTitle(top) || "").trim());
   }
-  // Lichamelijke opvoeding-style vak: title only, no fiche. GYM_RE matches ITEM titles ("LO",
-  // "zwemmen") and does NOT match the words "Lichamelijke opvoeding", and VAKKEN has no LO row,
-  // so the tag title is the only correct signal.
-  var LO_VAK_RE = /lichamelijke|turnen|^\s*l\.?\s*o\.?\s*$|^\s*zwemmen\s*$/i;
-  function isLoVak(tagId) {
-    if (tagId == null || tagId === "") return false;
-    var top = topTagIdOf(tagId);
-    return top != null && LO_VAK_RE.test((anyTagTitle(top) || "").trim());
-  }
+  // The two titles a gym lesuur can carry. This account has no "Lichamelijke opvoeding" TAG, so
+  // the trigger is the gym checkbox in the slot popup — never the Vak dropdown.
   var LO_TITLES = ["Lichamelijke opvoeding", "Zwemmen"];
 
   // ---------- Thema identity ----------
@@ -2117,6 +2114,7 @@
       if (nv === (s.title || "")) return;
       if (!titleDirty) { pushUndo("titel"); titleDirty = true; }
       s.title = nv;
+      refreshLoRow();
       renderTimetable();
     }
     titleInp.addEventListener("keydown", function (e) {
@@ -2126,29 +2124,29 @@
     });
     titleInp.addEventListener("blur", applyTitle);
 
-    // LO/zwemmen is "title only, no fiche". When the vak is an LO-type tag, offer the two titles
-    // as one click each instead of retyping them every week.
     var loRow = h("div", { class: "qwp-lorow" });
+    var results = h("div", { class: "qwp-results", id: "qwp-pop-results" });
+    var gymChk = h("input", { type: "checkbox" }); if (s.isGym) gymChk.checked = true;
+
+    // A gym lesuur is "title only, no fiche", so its title IS the lesson. Offer both titles as one
+    // click instead of retyping them weekly. Declared AFTER gymChk, which setLoTitle touches.
     function setLoTitle(t) {
-      if (!titleDirty) { pushUndo("titel"); titleDirty = true; }
-      s.title = t; titleInp.value = t;
-      // Only claim the slot as gym when there is nothing to lose — an attached fiche stays.
-      if (!s.ficheContentId) { s.isGym = true; gymChk.checked = true; }
-      refreshTitleNote(); renderTimetable();
+      if (!titleDirty) { pushUndo("lesuur titel"); titleDirty = true; }
+      s.title = t; titleInp.value = t; titleOrig = t;   // keep Escape from reverting behind us
+      refreshTitleNote(); refreshLoRow(); renderTimetable();
     }
     function refreshLoRow() {
       loRow.innerHTML = "";
-      if (!isLoVak(s.vak) || s.isFullday) { loRow.style.display = "none"; return; }
+      // Any gym slot, including one Questi already flagged by its title at hydrate.
+      if (!s.isGym || s.isFullday) { loRow.style.display = "none"; return; }
       loRow.style.display = "";
       LO_TITLES.forEach(function (t) {
         loRow.appendChild(h("button", {
           class: "qwp-lobtn" + ((s.title || "") === t ? " on" : ""),
-          text: t, onclick: function () { setLoTitle(t); refreshLoRow(); }
+          text: t, onclick: function () { setLoTitle(t); }
         }));
       });
     }
-    var results = h("div", { class: "qwp-results", id: "qwp-pop-results" });
-    var gymChk = h("input", { type: "checkbox" }); if (s.isGym) gymChk.checked = true;
 
     function renderResults() {
       results.innerHTML = "";
@@ -2194,16 +2192,27 @@
         s.themaFiche = isThemaVak(curTagId);
         // Tagging a lesuur as Lichamelijke opvoeding titles it — it needs no fiche, so the title
         // IS the lesson. Defaults to the first of LO_TITLES; the buttons switch to Zwemmen.
-        // Auto-title only when there is nothing to lose: no fiche, and not already an LO title.
-        // With a fiche attached the buttons stay available, but nothing is overwritten silently.
-        if (isLoVak(curTagId) && !s.ficheContentId && LO_TITLES.indexOf(s.title || "") < 0) setLoTitle(LO_TITLES[0]);
-        refreshLoRow();
       }
       refresh();
     };
     searchInp.oninput = renderResults;
     refreshTitleNote(); refreshLoRow();
-    gymChk.onchange = function () { pushUndo("gym"); s.isGym = gymChk.checked; if (s.isGym) { s.ficheContentId = null; s.ficheTitle = ""; searchInp.value = ""; } refreshTitleNote(); renderTimetable(); };
+    // Remembered so unticking undoes exactly what ticking did. Blanking outright would commit the
+    // "Lesuur" fallback (Questi rejects an empty title) and silently rename e.g. "M3".
+    var titleBeforeGym = null;
+    gymChk.onchange = function () {
+      pushUndo("gym");
+      s.isGym = gymChk.checked;
+      if (s.isGym) {
+        s.ficheContentId = null; s.ficheTitle = ""; searchInp.value = "";
+        if (LO_TITLES.indexOf(s.title || "") < 0) { titleBeforeGym = s.title || ""; setLoTitle(LO_TITLES[0]); }
+      } else if (LO_TITLES.indexOf(s.title || "") > -1) {
+        // Only take back a title WE wrote; anything hand-typed stays.
+        s.title = titleBeforeGym != null ? titleBeforeGym : "";
+        titleInp.value = s.title; titleOrig = s.title; titleBeforeGym = null;
+      }
+      refreshTitleNote(); refreshLoRow(); renderTimetable();
+    };
 
     var modal = h("div", { class: "qwp-modal", id: "qwp-modal" }, [
       h("div", { class: "qwp-modal-box" }, [
