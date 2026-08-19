@@ -150,11 +150,22 @@ Two traps, both of which shipped as bugs:
 
 `doCommit` must re-apply the prefix to Questi's decorated title (`themaTitleFor`), or the prefix
 never reaches the server. `themaCommitTitle`/`stripThemaPrefix` keep it idempotent.
+An explicit **manual override** outranks all of it: picking a Vak in the popup on a whole-week slot
+stores `state.themaVak[<repeatId|normalised origTitle>] = tagId` in `qwp_state_v6`, which
+`stampThemaKey` consults first. That is the escape hatch for a title no rule can resolve, so a new
+abbreviation never needs a code change. `THEMA_ALIAS` maps an item-title regex to a **tag-title**
+regex (not a `VAKKEN` id), so a vak with no `VAKKEN` entry — lichamelijke opvoeding — resolves too.
 `ensureThemaKeys` re-stamps before each render because boot fetches tags and the week in parallel.
 Full-day items must not read `state.settings`: with no start time they all share the key
 `"<dayIdx>|"`, so their `vak` comes from `themaTagId`. A thema slot **keeps** `themaFiche` when it
 receives a fiche, so `descFor` goes on writing `"Zie themafiche."` — but the grid cell and the
 print band show the *fiche* title, not that literal.
+
+Layout: the 64px label column is **empty by design**. It once held the row label, and because grid
+rows are auto-height a wrapped lesson title there stretched the whole row. The thema name now sits
+in the band, in the same `.qwp-cell-top` slot a normal cell uses for its vak label — that is what
+makes a band exactly as tall as a filled lesuur, rather than a hand-tuned `min-height`. Anything
+added to a band must stay out of flow (see `.qwp-thema-more`) or it will grow the row again.
 
 **Opening week.** `detectViewedWeekStart` reads Questi's own `/cal/items` requests out of the
 performance timeline. It must match `/cal/items?` **only** (`/cal/items/count` is a MONTH query —

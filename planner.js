@@ -76,7 +76,7 @@
   // ---------- Storage ----------
   var STORE_KEY = "qwp_state_v6";
   function mkPanel(vak, sort) { return { source: "self", sortDir: sort || "az", filterVak: vak || null, filterTagId: null, hideUsed: false, gradeFilter: null }; }
-  var state = { colleagues: [], settings: {}, weeks: 1, panelCount: 2, pickerView: "list", splitRatio: 0.58, sideCollapsed: null, workingCalendarId: null, manualSchoolId: null, manualSchoolyear: null, manualOwnTagId: null, saveThrottleMs: 250, panels: [mkPanel(null, "az"), mkPanel(null, "az"), mkPanel(null, "az")] };
+  var state = { colleagues: [], settings: {}, weeks: 1, panelCount: 2, pickerView: "list", splitRatio: 0.58, sideCollapsed: null, workingCalendarId: null, manualSchoolId: null, manualSchoolyear: null, manualOwnTagId: null, themaVak: {}, saveThrottleMs: 250, panels: [mkPanel(null, "az"), mkPanel(null, "az"), mkPanel(null, "az")] };
   function loadState() {
     return new Promise(function (res) {
       try {
@@ -96,6 +96,7 @@
     if (s.manualSchoolId != null) state.manualSchoolId = s.manualSchoolId;
     if (s.manualSchoolyear != null) state.manualSchoolyear = s.manualSchoolyear;
     if (s.manualOwnTagId != null) state.manualOwnTagId = s.manualOwnTagId;
+    if (s.themaVak) state.themaVak = s.themaVak;   // thema identity → vak, chosen by hand
     if (s.panelCount) state.panelCount = s.panelCount;
     if (s.pickerView) state.pickerView = s.pickerView;
     if (s.splitRatio) state.splitRatio = s.splitRatio;
@@ -694,9 +695,14 @@
   // the old fallback reused VAKKEN[].re, whose wereldorientatie entry contains "thema" — so any
   // fiche called "Thema 5 …" or "… Thema 'Vriendschap'" resolved to WO and two themafiches
   // collapsed onto one row. That single word was the entire bug. Never widen this to a search regex.
+  // `re` matches the ITEM title, `tag` matches the teacher's own TAG title. Resolving straight
+  // against the live tags (instead of via a VAKKEN id) means a vak with no VAKKEN entry —
+  // lichamelijke opvoeding — resolves too, and a new vak needs no table entry.
   var THEMA_ALIAS = [
-    { re: /WO|wereldori/i, vak: "wereldorientatie" },
-    { re: /godsdienst/i, vak: "godsdienst" }
+    { re: /\b(wero|wo)\b/i, tag: /wereldori/i },
+    { re: /\bgodsdienst\b/i, tag: /godsdienst/i },
+    { re: /\b(muvo|muzo)\b/i, tag: /muzische|muvo|muzo/i },
+    { re: /\b(l\.?o\.?|turnen|zwemmen)\b/i, tag: /lichamelijke|turnen/i }
   ];
   function topTagById(id) {
     var tops = topTagsForOwner(ownTagsList(), ctx.ownerId) || [];
@@ -735,9 +741,11 @@
     if (best) return best;
     // 3. Tight aliases for abbreviations ("WO" → Wereldoriëntatie).
     for (var i = 0; i < THEMA_ALIAS.length; i++) {
-      if (!THEMA_ALIAS[i].re.test(origTitle || "")) continue;
-      var id = vakTagId(THEMA_ALIAS[i].vak); if (id == null) continue;
-      var hit = topTagById(id); if (hit) return hit;
+      var a = THEMA_ALIAS[i];
+      if (!a.re.test(origTitle || "")) continue;
+      var hit = null;
+      for (var k = 0; k < tops.length; k++) if (a.tag.test((tops[k].title || "").trim())) { hit = tops[k]; break; }
+      if (hit) return hit;
     }
     return null;
   }
@@ -758,13 +766,35 @@
     return label + THEMA_SEP + body;
   }
   function themaCommitTitle(s, ficheTitle) { return themaTitleFor(s.themaTagId, ficheTitle || s.title || ""); }
+  // A whole-week item's stable identity for the manual vak override: the recurring-series id when
+  // there is one, else its (normalised) original title. Same two signals stampThemaKey trusts.
+  function themaIdentity(s) {
+    if (!s) return null;
+    if (s.repeatId) return "rep:" + s.repeatId;
+    var t = normTitle(s.origTitle || s.title);
+    return t ? "title:" + t : null;
+  }
+  function themaVakOverride(s) {
+    var id = themaIdentity(s); if (!id) return null;
+    var v = (state.themaVak || {})[id];
+    return v != null ? v : null;
+  }
+  function setThemaVakOverride(s, tagId) {
+    var id = themaIdentity(s); if (!id) return;
+    if (!state.themaVak) state.themaVak = {};
+    if (tagId == null) delete state.themaVak[id]; else state.themaVak[id] = tagId;
+    saveState();
+  }
   // Stamp themaKey/themaTagId on a full-day slot. Idempotent; safe to call again after a reload.
   // Priority: the recurring-series id (survives ANY rename) → tag resolved from origTitle
   // (prefix, containment, alias) → the normalised title itself.
   function stampThemaKey(s) {
     if (!s || !s.isFullday || s.idCalendar === "cal_holidays") return s;
-    var tag = themaTagFor(s.origTitle || s.title);
-    s.themaTagId = tag ? tag.id : null;
+    // An explicit choice from the popup beats prefix/tag/alias — it is the one signal that is
+    // not a guess, and it is how an unmatched row gets named without a code change.
+    var ov = themaVakOverride(s);
+    var tag = ov != null ? topTagById(ov) : themaTagFor(s.origTitle || s.title);
+    s.themaTagId = tag ? tag.id : (ov != null ? ov : null);
     // A recurring whole-week thema keeps one id_repeat across every week, and Questi never
     // rewrites it — so it identifies the series even after the title became a fiche title.
     if (s.repeatId) { s.themaKey = "rep:" + s.repeatId; return s; }
@@ -1334,8 +1364,12 @@
       var p = s ? printCellParts(pv, s) : null;
       var txt = p ? (p.main || p.vak || "") : "";
       if (!txt || isLesuurPlaceholder(txt)) return;
-      rows += '<tr class="pthemarow"><td class="pc pthema" colspan="6"><span class="pthema-k">' +
-        esc(themaLabel(key, pv.slots)) + "</span>" + esc(txt) + "</td></tr>";
+      // Skip the label when it IS the text (an untagged row is labelled by its own title) —
+      // otherwise the band prints the same string twice.
+      var lbl = themaLabel(key, pv.slots);
+      var same = normTitle(lbl) === normTitle(txt);
+      rows += '<tr class="pthemarow"><td class="pc pthema" colspan="6">' +
+        (same ? "" : '<span class="pthema-k">' + esc(lbl) + "</span>") + esc(txt) + "</td></tr>";
     });
     er.rows.forEach(function (t, idx) {
       var m = er.meta[t], endL = (m && m.end) ? m.end : "";
@@ -1826,7 +1860,9 @@
   }
 
   function appendThemaRow(grid, label, key) {
-    grid.appendChild(h("div", { class: "qwp-tt-themalbl", text: label, title: label }));
+    // Deliberately EMPTY: this sits in the 64px time column, and a wrapped lesson title here
+    // stretched the whole row (grid rows are auto-height). The name lives in the bar instead.
+    grid.appendChild(h("div", { class: "qwp-tt-themalbl", title: label }));
     for (var w = 0; w < view.weeks; w++) {
       var all = weekThemaSlots(w, key), s = all[0];
       var cell;
@@ -1912,6 +1948,13 @@
       : (s.ficheTitle || (s.origFicheTitle ? ("was: " + s.origFicheTitle) : "Klik of sleep om te kiezen"));
     // No status pills — color conveys state (see sidebar legend). s.vak = live tag id.
     var vakLbl = s.vak ? ((tagTitle("self", s.vak) || "").trim()) : "";
+    // A thema band shows its thema name in the SAME place a normal cell shows its vak, so the two
+    // are structurally identical and end up the same height. No tag resolved → no chip, plus a
+    // quiet hint, because such a row can be fixed by picking a Vak in this cell's popup.
+    var themaBand = isThemaSlot(s);
+    var themaChip = themaBand && s.themaTagId != null ? (anyTagTitle(s.themaTagId) || "").trim() : "";
+    var themaUntagged = themaBand && !themaChip;
+    if (themaBand) vakLbl = themaChip;
     // The sub-label is the lesuur's OWN vak (Instellingen), not the fiche's. When the attached
     // fiche belongs to a different vak, say so instead of quietly showing the wrong subject.
     var mism = vakMismatch(s);
@@ -1942,15 +1985,18 @@
         } catch (err) {}
       }
     }, [
-      (vakLbl || mism) ? h("div", { class: "qwp-cell-top" }, [
+      // A thema band ALWAYS gets the top line (chip, or the "geen vaktag" nudge in its place),
+      // so tagged and untagged bands are the same height as each other and as a filled lesuur.
+      (vakLbl || mism || themaBand) ? h("div", { class: "qwp-cell-top" }, [
         h("span", { class: "qwp-cell-vak", text: vakLbl }),
+        themaUntagged ? h("span", { class: "qwp-thema-untagged", title: "Klik deze balk en kies een Vak om de rij te benoemen.", text: "geen vaktag" }) : null,
         mism ? h("span", {
           class: "qwp-vakwarn",
           title: "Fiche hoort bij " + (mism.ficheVak || "?") + " · dit lesuur staat ingesteld als " + (mism.slotVak || "?"),
           text: "≠ " + (mism.ficheVak || "?")
         }) : null
       ]) : null,
-      h("div", { class: "qwp-cell-title", text: s.title || "(leeg)" }),
+      h("div", { class: "qwp-cell-title", text: (themaBand ? (stripThemaPrefix(s.title) || s.title) : s.title) || "(leeg)" }),
       h("div", { class: "qwp-cell-fiche", text: fiche })
     ]);
     // Filled (non-thema) slots are draggable → move/swap onto another slot.
@@ -2066,7 +2112,18 @@
     vakSel.onchange = function () {
       curTagId = vakSel.value ? (+vakSel.value) : null;
       s.vak = curTagId != null ? curTagId : "";
-      s.themaFiche = curTagId != null && isThemaTitle(tagTitle("self", curTagId));
+      // On a whole-week item the Vak dropdown names the THEMA: it labels the row straight away,
+      // is remembered locally (so it survives a reload), and becomes the "<Thema> — " title
+      // prefix on the next commit.
+      if (s.isFullday) {
+        setThemaVakOverride(s, curTagId);
+        s.themaTagId = curTagId;
+        s.themaFiche = true;                       // a whole-week band always writes "Zie themafiche."
+        ensureThemaKeys(view.slots);
+        renderTimetable();
+      } else {
+        s.themaFiche = curTagId != null && isThemaTitle(tagTitle("self", curTagId));
+      }
       refresh();
     };
     searchInp.oninput = renderResults;
@@ -3120,7 +3177,7 @@
     }
     themaRowKeys().forEach(function (key) {
       var lbl = themaLabel(key, view.slots);
-      grid.appendChild(h("div", { class: "qwp-tt-themalbl", text: lbl, title: lbl }));
+      grid.appendChild(h("div", { class: "qwp-tt-themalbl", title: lbl }));   // empty, as in the grid
       for (var w = 0; w < view.weeks; w++) {
         var ts = weekThemaSlot(w, key);
         var tc = h("div", { class: "qwp-cell thema-span qwp-rv-cell" + (w > 0 ? " wk-sep" : "") }, [reviewCellContent(ts, mode)]);

@@ -182,22 +182,25 @@ html.qwp-locked, html.qwp-locked body { overflow: hidden !important; }
 .qwp-tt-dayhd { display:flex; align-items:center; justify-content:center; text-align:center; padding:6px 8px; background:var(--accent-weak); border-bottom:2px solid var(--accent-line); }
 .qwp-tt-daydate { font-size:11.5px; font-weight:700; color:var(--accent); text-align:center; }
 .qwp-tt-timelbl { display:flex; align-items:flex-start; justify-content:flex-end; padding:8px 8px 0 0; font-size:11px; font-weight:600; color:var(--faint); font-variant-numeric:tabular-nums; }
-/* Label is now a live tag title ("Wereldoriëntatie"), not a fixed "WO"/"Gods" — so it has to
-   wrap and clip inside the 64px time column instead of overflowing it. */
-.qwp-tt-themalbl { display:flex; align-items:center; justify-content:flex-end; text-align:right; padding-right:8px; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--thema); overflow:hidden; word-break:break-word; hyphens:auto; line-height:1.15; }
+/* Empty by design: the thema name lives in the bar. Kept as a grid cell so the columns line up.
+   min-width/overflow guard so no future text can stretch the row from this 64px column again. */
+.qwp-tt-themalbl { min-width:0; overflow:hidden; }
 
 /* Visual gap between the two weeks (side-by-side separator line). */
 .qwp-tt .wk-sep { border-left:2px solid var(--accent-line); padding-left:12px; margin-left:6px; }
 
-/* Theme rows: one per whole-week item present (WO, Godsdienst, …), each one full-week cell. */
-.qwp-cell.thema-span { min-height:34px; padding:5px 11px; display:flex; align-items:center; gap:10px; background:var(--thema-weak); border-color:var(--thema-line); }
-.qwp-cell.thema-span .qwp-cell-top { display:none; }
-.qwp-cell.thema-span .qwp-cell-title { margin-top:0; font-size:12px; }
-.qwp-cell.thema-span .qwp-cell-fiche { margin-top:0; }
+/* Theme rows: one per whole-week item present (WO, Godsdienst, …), each one full-week cell.
+   Same box model as a normal cell (padding + block flow: top line, then title) so a thema band
+   is exactly as tall as a filled lesuur — previously it was a flex ROW, which both shortened it
+   and put the title and the fiche side by side (the same string twice). */
+.qwp-cell.thema-span { position:relative; background:var(--thema-weak); border-color:var(--thema-line); }
 .qwp-cell.thema-span.empty { background:transparent; }
 .qwp-cell.thema-span .qwp-cell-empty-hint { font-style:italic; }
 /* Two whole-week items under one tag in the same week: the row can only show one, so say so. */
-.qwp-thema-more { margin-left:auto; flex:0 0 auto; font-size:10px; font-weight:700; color:var(--thema); background:#fff; border:1px solid var(--thema-line); border-radius:999px; padding:1px 7px; cursor:help; }
+/* Whole-week item that matches no vaktag — nudge, not an error. */
+.qwp-thema-untagged { margin-left:8px; font-size:9.5px; font-weight:600; text-transform:none; letter-spacing:0; color:var(--faint); font-style:italic; cursor:help; }
+/* Out of flow (the band is block flow now), so it can never add a line and grow the row. */
+.qwp-thema-more { position:absolute; top:5px; right:9px; font-size:10px; font-weight:700; color:var(--thema); background:#fff; border:1px solid var(--thema-line); border-radius:999px; padding:1px 7px; cursor:help; }
 
 /* Pauze / speeltijd band spanning the whole grid width. */
 .qwp-tt-break { grid-column:1 / -1; display:flex; align-items:center; justify-content:center; min-height:16px; }
@@ -236,12 +239,12 @@ html.qwp-locked, html.qwp-locked body { overflow: hidden !important; }
 .qwp-cell.dirty { border-color:var(--change-line); background:var(--change-weak); border-left:3px solid var(--change); }
 .qwp-cell.isgym { background:var(--gym-weak); }
 .qwp-cell.isthema { background:var(--thema-weak); border-left:3px solid var(--thema); }
+.qwp-cell.thema-span .qwp-cell-vak { color:var(--thema); }
 .qwp-cell-top { display:flex; align-items:center; justify-content:space-between; gap:6px; min-height:14px; }
 .qwp-cell-vak { font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--accent); }
 .qwp-cell-title { font-size:12px; font-weight:600; line-height:1.2; word-break:break-word; margin-top:1px; }
 /* Overview = title only. Hide the 2nd (description) line in the grid. */
 .qwp-cell-fiche { display:none; }
-.qwp-cell.thema-span .qwp-cell-fiche { display:inline; font-size:11px; color:var(--thema); margin-top:0; }
 .qwp-cell-empty-hint { font-size:10.5px; color:var(--faint); }
 .qwp-badge { font-size:9px; font-weight:700; letter-spacing:.03em; padding:2px 6px; border-radius:999px; text-transform:uppercase; white-space:nowrap; }
 .qwp-badge-change { background:var(--change); color:#fff; }

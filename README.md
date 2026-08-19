@@ -98,7 +98,11 @@ De knoppen verschijnen **enkel op de kalenderpagina**. Sluiten doe je met het **
   taal-uur staat. Bij methodefiches kan het vak niet opgehaald worden; die krijgen dus nooit een
   waarschuwing (liever geen melding dan een verkeerde).
 - **Themarijen** (hele-week-items zoals WO en Godsdienst) staan bovenaan het rooster, elk op een
-  **eigen rij** met de naam van je eigen tag. Heb je er drie (bv. ook MUVO), dan krijg je er drie —
+  **eigen rij**, even hoog als een gewoon lesuur. De naam van het thema staat in de balk zelf.
+  Herkent de planner het thema niet (bv. een titel als "Camino 3 – …"), dan staat er
+  *geen vaktag*: klik de balk, kies een **Vak**, en de rij is meteen benoemd — die keuze wordt
+  onthouden en komt bij het wegschrijven ook in de titel terecht. Afkortingen die vanzelf herkend
+  worden: `WO`/`wero`, `godsdienst`, `muvo`/`muzo`, `LO`/`turnen`. Heb je er drie (bv. ook MUVO), dan krijg je er drie —
   ze worden afgeleid uit je tags, niet uit een vaste lijst. Een hele-dag-item dat bij geen enkele
   tag hoort (bv. een schooluitstap) krijgt een eigen rij met zijn eigen titel.
   Bij het wegschrijven krijgt zo'n item de titel `"Godsdienst — <fichetitel>"`: zo weet de planner
