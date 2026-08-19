@@ -67,7 +67,11 @@
     cols: 1, sortKey: null, sortDir: "asc",
     loading: false, tagsMapped: false, tagsMapping: false,
     dirtyWrites: false,         // any live write this session → reload Questi on close (like planner)
-    importEnabled: false        // import stays gated until the OPSTAP resolver lands (August)
+    importEnabled: false,       // import stays gated until the OPSTAP resolver lands (August)
+    // Pick mode: the Methodes panel borrows this overlay to let the teacher pick the fiches that
+    // make up a methode. Read-only — every write affordance is hidden while it is set.
+    pick: null,                 // { title, onDone, onCancel }
+    pickStore: {}               // ficheId -> fiche, so a selection survives switching tags
   };
   var GRADES = ["K0", "K1", "K2", "K3", "L1", "L2", "L3", "L4", "L5", "L6", "NLG"];
 
@@ -167,7 +171,7 @@
     var gradeSel = h("select", { class: "qwl-gradesel", id: "qwl-gradesel", onchange: function (e) { mgr.gradeFilter = e.target.value || ""; applyFilter(); } },
       [h("option", { value: "", text: "Alle leerjaren" })].concat(GRADES.map(function (g) { return h("option", { value: g, text: g }); })));
     var header = h("div", { class: "qwl-header" }, [
-      h("div", { class: "qwl-title", text: "Lesfiches beheren" }),
+      h("div", { class: "qwl-title", id: "qwl-title", text: "Lesfiches beheren" }),
       search, gradeSel,
       h("span", { class: "qwl-status", id: "qwl-status", text: "" }),
       h("span", { class: "qwl-hspacer" }),
@@ -176,15 +180,18 @@
     var side = h("div", { class: "qwl-side", id: "qwl-side" }, [
       h("div", { class: "qwl-side-lbl", text: "Selectie" }),
       h("button", { class: "qwl-sbtn", id: "qwl-selall", onclick: toggleSelectAll, text: "Alles selecteren" }),
+      // Pick mode only — confirm/cancel the selection back to whoever opened the picker.
+      h("button", { class: "qwl-sbtn qwl-pickok", id: "qwl-pickok", onclick: pickConfirm, text: "Selectie gebruiken" }),
+      h("button", { class: "qwl-sbtn", id: "qwl-pickcancel", onclick: pickCancel, text: "Annuleer" }),
       h("button", { class: "qwl-sbtn", id: "qwl-tags", onclick: openTagsModal, text: "Tags bewerken" }),
       h("button", { class: "qwl-sbtn qwl-danger", id: "qwl-del", onclick: openDeleteModal, text: "Verwijderen" }),
-      h("div", { class: "qwl-side-sep" }),
+      h("div", { class: "qwl-side-sep", id: "qwl-sep1" }),
       h("div", { class: "qwl-side-lbl", text: "Weergave" }),
       h("button", { class: "qwl-sbtn", id: "qwl-cols", onclick: toggleCols, text: "" }),
       h("button", { class: "qwl-sbtn", onclick: reload, text: "Vernieuwen" }),
       h("button", { class: "qwl-sbtn qwl-import", id: "qwl-import", onclick: function () { if (mgr.importEnabled) openImportView(); }, title: "Binnenkort — OPSTAP volgt", disabled: mgr.importEnabled ? null : "true", text: "Importeren" }),
-      h("div", { class: "qwl-side-sep" }),
-      h("div", { class: "qwl-side-lbl", text: "Tags beheren" }),
+      h("div", { class: "qwl-side-sep", id: "qwl-sep2" }),
+      h("div", { class: "qwl-side-lbl", id: "qwl-taglbl", text: "Tags beheren" }),
       h("button", { class: "qwl-sbtn", id: "qwl-tagadd", onclick: openAddTagModal, text: "Tag toevoegen" }),
       h("button", { class: "qwl-sbtn qwl-danger", id: "qwl-tagdel", onclick: openRemoveTagModal, text: "Tag verwijderen" }),
       h("div", { class: "qwl-side-grow" }),
@@ -206,9 +213,16 @@
 
   function open() {
     if (!window.__QWP_SHARED) { console.warn("[QWL] __QWP_SHARED ontbreekt — planner niet geladen."); return; }
-    build(); show();
+    build(); show(); applyPickMode();
     loadState().then(function () {
       mgr.cols = lstate.cols || 1; mgr.sortKey = lstate.sortKey || null; mgr.sortDir = lstate.sortDir || "asc";
+      // A picker always opens on its own tag — including on a warm manager, which would
+      // otherwise keep showing whatever tag was last browsed.
+      if (mgr.pick && mgr.pick.startTagId != null) {
+        var startPick = mgr.pick.startTagId;
+        var go = function () { renderTagBar(); return loadListUnion(startPick).then(function () { loadAllTagMemberships(); }); };
+        return mgr.ownTags.length ? go() : S().fetchOwnTags().then(function (tags) { mgr.ownTags = tags || []; return go(); });
+      }
       if (mgr.ownTags.length) { renderTagBar(); applyFilter(); loadAllTagMemberships(); return; }
       setStatus("Tags laden…");
       return S().fetchOwnTags().then(function (tags) {
@@ -220,11 +234,56 @@
     });
   }
   function close() {
+    if (mgr.pick) { pickCancel(); return; }
     if (mgr.els.root) mgr.els.root.classList.remove("qwl-show");
     var planner = document.getElementById("qwp-overlay");
     if (!(planner && planner.classList.contains("qwp-show"))) document.documentElement.classList.remove("qwl-locked");
     // Mirror the planner: if we wrote anything (tags/fiches), reload so Questi's SPA reflects it.
     if (mgr.dirtyWrites) { try { location.reload(); } catch (e) {} }
+  }
+
+  // ========================================================================
+  //  Pick mode — the Methodes panel borrows this overlay to select fiches.
+  //  Strictly read-only: every write affordance is hidden while mgr.pick is set,
+  //  so a picker can never delete a fiche or stage a tag change by accident.
+  // ========================================================================
+  // opts: { title, preselected:[ficheId…], startTagId?, onDone(fiches), onCancel? }
+  function openPicker(opts) {
+    if (!window.__QWP_SHARED) { console.warn("[QWL] __QWP_SHARED ontbreekt — planner niet geladen."); return; }
+    mgr.pick = opts || {};
+    mgr.selected = {}; mgr.pickStore = {}; mgr.pending = {};
+    (opts.preselected || []).forEach(function (id) { mgr.selected[String(id)] = true; });
+    if (opts.startTagId != null) lstate.lastTagId = opts.startTagId;
+    open();
+  }
+  function applyPickMode() {
+    var on = !!mgr.pick;
+    var t = document.getElementById("qwl-title");
+    if (t) t.textContent = on ? (mgr.pick.title || "Fiches kiezen") : "Lesfiches beheren";
+    // Hide everything that writes, plus the now-meaningless separators/labels.
+    ["qwl-tags", "qwl-del", "qwl-import", "qwl-review", "qwl-tagadd", "qwl-tagdel", "qwl-taglbl", "qwl-sep2"]
+      .forEach(function (id) { var e = document.getElementById(id); if (e) e.style.display = on ? "none" : ""; });
+    ["qwl-pickok", "qwl-pickcancel"].forEach(function (id) { var e = document.getElementById(id); if (e) e.style.display = on ? "" : "none"; });
+  }
+  // Keep the full fiche object for anything ticked, so switching tags never loses a selection.
+  function rememberPicked(f) { if (mgr.selected[f.id]) mgr.pickStore[String(f.id)] = f; else delete mgr.pickStore[String(f.id)]; }
+  function pickConfirm() {
+    var p = mgr.pick; if (!p) return;
+    var picked = Object.keys(mgr.selected).map(function (id) { return mgr.pickStore[id] || fiskById(id); }).filter(Boolean);
+    endPick();
+    if (p.onDone) p.onDone(picked);
+  }
+  function pickCancel() {
+    var p = mgr.pick; if (!p) return;
+    endPick();
+    if (p.onCancel) p.onCancel();
+  }
+  function endPick() {
+    mgr.pick = null; mgr.selected = {}; mgr.pickStore = {};
+    applyPickMode();
+    if (mgr.els.root) mgr.els.root.classList.remove("qwl-show");
+    var planner = document.getElementById("qwp-overlay");
+    if (!(planner && planner.classList.contains("qwp-show"))) document.documentElement.classList.remove("qwl-locked");
   }
   function reload() { loadList(mgr.tagFilter != null ? mgr.tagFilter : allOwnTagId()); }
   function toggleCols() { mgr.cols = (mgr.cols === 2 ? 1 : 2); lstate.cols = mgr.cols; saveState(); renderList(); }
@@ -378,22 +437,36 @@
     var chips = (mgr.tagChips[f.id] || []).map(function (tid) {
       return h("span", { class: "qwl-chip", style: "border-color:" + tagHex(tid) }, [h("span", { class: "qwl-dot", style: "background:" + tagHex(tid) }), h("span", { text: tagName(tid) })]);
     });
+    var picking = !!mgr.pick;
     var cb = h("input", { class: "qwl-cb", type: "checkbox" }); cb.checked = checked;
-    cb.addEventListener("change", function () { if (cb.checked) mgr.selected[f.id] = true; else delete mgr.selected[f.id]; updateSidebar(); });
+    cb.addEventListener("change", function () {
+      if (cb.checked) mgr.selected[f.id] = true; else delete mgr.selected[f.id];
+      if (picking) { rememberPicked(f); row.classList.toggle("sel", cb.checked); }
+      updateSidebar();
+    });
     var curTitle = (pending && mgr.pending[f.id].subject != null) ? mgr.pending[f.id].subject : ficheName(f);
     var subjectCell = h("div", { class: "qwl-c-subject" });
-    var txt = h("span", { class: "qwl-c-subject-txt", text: curTitle, title: "Klik om de titel te bewerken" });
-    txt.addEventListener("click", function (e) { e.stopPropagation(); startInlineTitle(f, subjectCell, ficheName(f)); });
+    var txt = h("span", { class: "qwl-c-subject-txt", text: curTitle, title: picking ? "Klik om te (de)selecteren" : "Klik om de titel te bewerken" });
+    // In pick mode the title must not become an editor — the whole row just toggles selection.
+    if (!picking) txt.addEventListener("click", function (e) { e.stopPropagation(); startInlineTitle(f, subjectCell, ficheName(f)); });
     subjectCell.appendChild(txt);
     if (pending) subjectCell.appendChild(h("span", { class: "qwl-badge", text: "gewijzigd" }));
-    var row = h("div", { class: "qwl-row" + (checked ? " sel" : "") + (pending ? " pend" : ""), title: "Dubbelklik om volledig te bewerken" }, [
+    var row = h("div", { class: "qwl-row" + (checked ? " sel" : "") + (pending ? " pend" : ""), title: picking ? "" : "Dubbelklik om volledig te bewerken" }, [
       h("label", { class: "qwl-cbcell" }, [cb]),
       subjectCell,
       h("div", { class: "qwl-c-grades", text: gradesOf(f) }),
       h("div", { class: "qwl-c-used", text: usedOf(f) }),
       h("div", { class: "qwl-c-tags" }, chips)
     ]);
-    row.addEventListener("dblclick", function () { openEditModal(f); });
+    if (picking) {
+      row.addEventListener("click", function (e) {
+        if (e.target === cb) return;            // the checkbox fires its own change event
+        cb.checked = !cb.checked;
+        cb.dispatchEvent(new Event("change"));
+      });
+    } else {
+      row.addEventListener("dblclick", function () { openEditModal(f); });
+    }
     return row;
   }
   // Inline title edit: swap the title text for an input; Enter/blur stages a title-only change.
@@ -444,12 +517,15 @@
     if (tg) { tg.textContent = "Tags bewerken" + (n ? " (" + n + ")" : ""); tg.disabled = n ? null : "true"; }
     if (dl) { dl.textContent = "Verwijderen" + (n ? " (" + n + ")" : ""); dl.disabled = n ? null : "true"; }
     if (sa) sa.textContent = (n && n >= mgr.filtered.length && mgr.filtered.length) ? "Wis selectie" : "Alles selecteren";
-    if (rv) { rv.textContent = "Wijzigingen controleren" + (p ? " (" + p + ")" : ""); rv.style.display = p ? "" : "none"; }
+    if (rv) { rv.textContent = "Wijzigingen controleren" + (p ? " (" + p + ")" : ""); rv.style.display = (mgr.pick || !p) ? "none" : ""; }
     if (cols) cols.textContent = mgr.cols === 2 ? "1 kolom" : "2 kolommen";
+    var ok = document.getElementById("qwl-pickok");
+    if (ok && mgr.pick) { ok.textContent = "Selectie gebruiken" + (n ? " (" + n + ")" : ""); ok.disabled = n ? null : "true"; }
   }
   function toggleSelectAll() {
     var allSel = selCount() >= mgr.filtered.length && mgr.filtered.length;
     if (allSel) mgr.selected = {}; else mgr.filtered.forEach(function (f) { mgr.selected[f.id] = true; });
+    if (mgr.pick) { if (allSel) mgr.pickStore = {}; else mgr.filtered.forEach(rememberPicked); }
     renderList();
   }
 
@@ -918,6 +994,27 @@
     function addRow(row) { rows.push(row); list.appendChild(h("div", { class: "qwl-diag-row" }, [h("div", { class: "qwl-diag-hd" }, [pill(row.status), h("span", { class: "qwl-diag-name", text: row.name })]), (row.detail ? h("div", { class: "qwl-diag-detail", text: row.detail }) : null), (row.status !== "OK" && row.next ? h("div", { class: "qwl-diag-next", text: "→ " + row.next }) : null)])); list.scrollTop = list.scrollHeight; }
     function copyReport() {
       var lines = ["Questi Lesfiche-manager — Zelftest", "", ]; rows.forEach(function (r) { lines.push("[" + r.status + "] " + r.name + (r.detail ? " — " + r.detail : "") + (r.status !== "OK" && r.next ? " — " + r.next : "")); });
+      // The methode-fiche probe decides whether copying is possible at all, so the report
+      // carries its raw shape — key names only, never the lesson content itself.
+      if (lastProbe) {
+        lines.push("", "--- Methodefiche-probe (ruw) ---");
+        lines.push("methode: " + lastProbe.methodKey + " · les " + lastProbe.lessonId + " · \"" + (lastProbe.lessonSubject || "") + "\"");
+        lines.push("lijstvelden: " + (lastProbe.listKeys || []).join(", "));
+        lastProbe.tries.forEach(function (t) {
+          lines.push("  " + (t.guess ? "[gok] " : "return_format=") + t.fmt + " → HTTP " + t.status + (t.err ? " · " + t.err : ""));
+          if (t.result) {
+            lines.push("    result keys: " + Object.keys(t.result).join(", "));
+            (t.result.fields || []).forEach(function (f, i) {
+              lines.push("    field[" + i + "] type=" + f.type + " tfid=" + f.template_field_id
+                + " keys=" + Object.keys(f).join("/")
+                + (f.type === "goals" && f.source && f.source.version ? " goalsVersion=" + f.source.version.id : ""));
+            });
+            (t.result.attachments || []).forEach(function (a, i) {
+              lines.push("    attachment[" + i + "] keys=" + Object.keys(a).join("/") + " content keys=" + Object.keys(a.content || {}).join("/"));
+            });
+          }
+        });
+      }
       var text = lines.join("\n");
       if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(function () { setStatus("Rapport gekopieerd."); }); else { var t = document.createElement("textarea"); t.value = text; mgr.els.page.appendChild(t); t.select(); try { document.execCommand("copy"); } catch (e) {} t.remove(); }
     }
@@ -927,6 +1024,116 @@
     ft.appendChild(h("button", { class: "qwl-btn", onclick: m.close, text: "Sluiten" }));
     runDiag(addRow);
   }
+  // ------------------------------------------------------------------------
+  //  Probe: can a METHODE fiche's content be read?
+  //  Methode fiches are vendor content and reject the normal attachment endpoint
+  //  (1235 "no access to lesson"). Whether /lessons/{id} also refuses them has never
+  //  been observed — and the whole "copy a methode fiche into my own library" feature
+  //  depends on the answer. Strictly read-only: three GETs, no writes.
+  //  `mm.lastProbe` keeps the raw result so "Rapport kopiëren" can carry the details.
+  // ------------------------------------------------------------------------
+  var lastProbe = null;
+  // Deepest is_goal:true nodes of a concordance tree. The tree marks several levels as goals
+  // (the generic doel AND its leerlijn leaves); which level a create actually wants is still
+  // unverified, so this reports the leaves and never writes anything.
+  function leafGoalIds(nodes) {
+    var out = [];
+    (function walk(list) {
+      (list || []).forEach(function (n) {
+        var kids = n.children || [];
+        if (kids.length) walk(kids);
+        else if (n.is_goal && n.id != null) out.push(n.id);
+      });
+    })(nodes);
+    return out;
+  }
+  function probeMethodLesson(addRow) {
+    lastProbe = null;
+    return diagGet(api() + "/manage/methods/" + sid()).then(function (r) {
+      var methods = (r.json && r.json.result) || [];
+      if (!methods.length) { addRow({ status: "SKIP", name: "Methodefiche — inhoud leesbaar?", detail: "school heeft geen methodes" }); return; }
+      // Which methodes exist and which are actually available. The new-curriculum methodes
+      // (Camino, rekenroute) are not published yet — this row is how you see them arrive.
+      var avail = methods.filter(function (m) { return m.available; });
+      addRow({
+        status: "OK", name: "Methodes — beschikbaarheid",
+        detail: avail.length + "/" + methods.length + " beschikbaar · "
+          + methods.map(function (m) { return (m.name || m.id) + (m.available ? "" : " (niet beschikbaar)"); }).join(" · ")
+      });
+      // Prefer an available methode as the probe subject; an unavailable one proves nothing.
+      var mth = avail[0] || methods[0];
+      return diagGet(api() + "/methods/" + encodeURIComponent(mth.id) + "/lessons?" + qs({ is_cluster: !!mth.is_cluster, schoolId: sid() })).then(function (r2) {
+        var lessons = (r2.json && r2.json.result) || [];
+        if (!lessons.length) { addRow({ status: "SKIP", name: "Methodefiche — inhoud leesbaar?", detail: "geen lessen in " + mth.id }); return; }
+        var lid = lessons[0].id;
+        // CONFIRMED 2026-08-16: only the methode-scoped route returns content. /cal/lessons/{id}
+        // answers 1235 for vendor content on every return_format — kept as a contract check so a
+        // future Questi change that opens it up (or breaks the scoped route) is visible.
+        var routes = [
+          { fmt: "methods/{key}/lessons/{id}", url: api() + "/methods/" + encodeURIComponent(mth.id) + "/lessons/" + lid + "?" + qs({ schoolId: sid(), is_cluster: !!mth.is_cluster }) },
+          { fmt: "lessons/{id}?return_format=edit", url: api() + "/lessons/" + lid + "?" + qs({ schoolId: sid(), return_format: "edit" }) }
+        ];
+        return routes.reduce(function (chain, g) {
+          return chain.then(function (acc) {
+            return diagGet(g.url).then(function (rr) {
+              acc.push({ fmt: g.fmt, status: rr.status, err: (rr.json && rr.json.error_msg) || null, result: (rr.json && rr.json.result) || null });
+              return acc;
+            });
+          });
+        }, Promise.resolve([])).then(function (tries) {
+          lastProbe = { methodKey: mth.id, methodName: mth.name, lessonId: lid, lessonSubject: lessons[0].subject, listKeys: Object.keys(lessons[0]), tries: tries };
+          // What the LIST row itself carries is the floor of what a copy could ever use.
+          addRow({ status: "OK", name: "Methodefiche — velden in de lijst", detail: Object.keys(lessons[0]).join(", ") });
+          var win = tries.filter(function (t) { return t.status === 200 && t.result; })[0];
+          if (!win) {
+            addRow({
+              status: "FAIL", name: "Methodefiche — inhoud leesbaar?",
+              detail: tries.map(function (t) { return t.fmt + ":" + t.status + (t.err ? " (" + t.err + ")" : ""); }).join(" · "),
+              next: "Geen enkele route geeft inhoud → volledige kopie onmogelijk. Vang de call op die Questi's eigen UI gebruikt om een methodefiche te tonen."
+            });
+            return;
+          }
+          var res = win.result, fields = res.fields || [];
+          var methodsFld = fields.filter(function (f) { return f.type === "methods"; })[0];
+          var textWithContent = fields.filter(function (f) { return f.type === "text" && f.content; }).length;
+          // Count the leaf goals in the concordance — those numeric ids are what a create's
+          // selected_goals needs, and they are the only curriculum data a copy can carry.
+          var conc = (methodsFld && methodsFld.concordances && methodsFld.concordances[0]) || null;
+          var goalIds = conc ? leafGoalIds(conc.content && conc.content.goals) : [];
+          var goalsVersion = conc && conc.source && conc.source.version ? (conc.source.version.format_type + " v" + conc.source.version.id) : "geen";
+          addRow({
+            status: "OK",
+            name: "Methodefiche — inhoud leesbaar (" + win.fmt + ")",
+            detail: "velden:" + fields.length + " [" + fields.map(function (f) { return f.type; }).join(",") + "]"
+              + " · tekstvelden met inhoud:" + textWithContent
+              + " · concordantie:" + goalsVersion + " · doel-ids:" + goalIds.length
+              + " · bijlagen:" + ((res.attachments || []).length)
+              + " · template:" + (res.template == null ? "geen" : res.template)
+          });
+          // No prose to copy: a methode fiche is doelen + concordance. The Lesverloop/Materiaal
+          // fields live in the school's own template and are the teacher's to fill.
+          if (!textWithContent) {
+            addRow({ status: "WARN", name: "Methodefiche — geen lesverloop/materiaal", detail: "vendor levert enkel doelen + concordantie", next: "Een kopie kan geen lestekst overnemen — die bestaat niet." });
+          }
+          // A copy needs a templateId. Match it exactly on the methode key, no guessing.
+          return diagGet(api() + "/lessons/templates?" + qs({ schoolId: sid() })).then(function (rt) {
+            var tpls = (rt.json && rt.json.result) || [];
+            var match = tpls.filter(function (t) {
+              return (t.structure || []).some(function (f) { return f.type === "methods" && f.method && String(f.method.id) === String(mth.id); });
+            })[0];
+            addRow({
+              status: match ? "OK" : "WARN",
+              name: "Methodefiche — passend template",
+              detail: match ? ("\"" + match.name + "\" (#" + match.id + ") via method.id " + mth.id) : ("geen template verwijst naar " + mth.id),
+              next: match ? null : "Kopie moet handmatig een template krijgen."
+            });
+            addRow({ status: "OK", name: "Methodefiche — proefobject", detail: mth.name + " · les " + lid + " · \"" + (lessons[0].subject || "") + "\"" });
+          });
+        });
+      });
+    });
+  }
+
   function runDiag(addRow) {
     var sampleFicheId = null, userTag = mgr.ownTags.filter(function (t) { return t.type !== "default"; })[0];
     var checks = [
@@ -947,7 +1154,33 @@
         var res = r.json && r.json.result, fld = res && res.fields && res.fields[0];
         addRow({ status: (res && res.fields && has(fld, "id") && has(fld, "template_field_id")) ? "OK" : "FAIL", name: "Fiche edit-contract", detail: "tags[" + ((res && res.tags) || []).length + "], fields[" + ((res && res.fields) || []).length + "]", next: (res && res.fields) ? null : "return_format=edit levert geen fields — bewerken kan breken." });
       }); },
-      function () { return diagGet(api() + "/lessons/templates?" + qs({ schoolId: sid() })).then(function (r) { var arr = (r.json && r.json.result) || []; addRow({ status: arr.length ? "OK" : "WARN", name: "Templates (import)", detail: arr.length + " templates", next: arr.length ? null : "Import nog niet klaar / geen templates." }); }); },
+      function () { return diagGet(api() + "/lessons/templates?" + qs({ schoolId: sid() })).then(function (r) {
+        var arr = (r.json && r.json.result) || [];
+        addRow({ status: arr.length ? "OK" : "WARN", name: "Templates (import)", detail: arr.length + " templates", next: arr.length ? null : "Import nog niet klaar / geen templates." });
+        if (!arr.length) return;
+        // Which curriculum versions are in use, and which templates link to a vendor methode.
+        // Old (ZILL) templates carry a `methods` field; the new Op.Stap ones so far do not —
+        // that difference decides whether a methode-fiche copy is even possible per vak.
+        var vers = {}, withMethod = 0;
+        arr.forEach(function (t) {
+          var hasM = false;
+          (t.structure || []).forEach(function (f) {
+            if (f.type === "methods") hasM = true;
+            var v = f.source && f.source.version;
+            if (v) vers[(v.format_type || "?") + " v" + v.id] = (vers[(v.format_type || "?") + " v" + v.id] || 0) + 1;
+          });
+          if (hasM) withMethod++;
+        });
+        addRow({
+          status: "OK", name: "Templates — leerplan + methodekoppeling",
+          detail: Object.keys(vers).map(function (k) { return k + "×" + vers[k]; }).join(" · ")
+            + " · " + withMethod + "/" + arr.length + " templates met methode-veld"
+        });
+      }); },
+      // ---- Methode-fiche leesbaarheid (probe voor "kopieer methodefiche") ----
+      // Niets in de extensie heeft ooit de INHOUD van een methodefiche gelezen. Zonder dat is
+      // kopiëren onmogelijk. Deze checks lezen alleen en beantwoorden de vraag definitief.
+      function () { return probeMethodLesson(addRow); },
       function () { var t = S().xsrfToken(); addRow({ status: t ? "OK" : "WARN", name: "XSRF-token", detail: t ? "cookie leesbaar" : "leeg", next: t ? null : "Schrijfacties (PATCH/POST/DELETE) hebben x-xsrf-token nodig." }); }
     ];
     var i = 0;
@@ -955,5 +1188,5 @@
   }
 
   // ---------- Export ----------
-  window.__QWP_LESSONS = { open: open, close: close };
+  window.__QWP_LESSONS = { open: open, close: close, openPicker: openPicker, runSequential: runSequential };
 })();

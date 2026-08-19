@@ -111,6 +111,22 @@
       else localStorage.setItem(STORE_KEY, JSON.stringify(state));
     } catch (e) {}
   }
+  // Generic key/value store shared with the other modules — same chrome.storage.local
+  // path as the planner's own state, with the same localStorage fallback.
+  function storeGet(key) {
+    return new Promise(function (res) {
+      try {
+        if (chrome && chrome.storage && chrome.storage.local) chrome.storage.local.get([key], function (o) { res((o && o[key]) || null); });
+        else res(JSON.parse(localStorage.getItem(key) || "null"));
+      } catch (e) { res(null); }
+    });
+  }
+  function storeSet(key, val) {
+    try {
+      if (chrome && chrome.storage && chrome.storage.local) { var o = {}; o[key] = val; chrome.storage.local.set(o); }
+      else localStorage.setItem(key, JSON.stringify(val));
+    } catch (e) {}
+  }
 
   // ---------- Runtime context detection ----------
   function safeStorage(fn) { try { return fn(); } catch (e) { return null; } }
@@ -441,6 +457,14 @@
     }).catch(function (err) { console.error("[QWP] /methods lessons failed:", err); return { items: [], total: 0 }; });
   }
 
+  // Same endpoint as fetchMethodFiches, but addressed by key instead of by a pseudo-colleague
+  // entry — the Methodes panel tracks a methode without loading it as a picker source.
+  function fetchMethodLessons(key, isCluster) {
+    var url = API + "/methods/" + encodeURIComponent(key) + "/lessons?" + qs({ is_cluster: !!isCluster, schoolId: ctx.schoolId });
+    return jget(url).then(function (j) { return (j && j.result) || []; })
+      .catch(function (err) { console.error("[QWP] /methods lessons failed:", err); return []; });
+  }
+
   function fetchFiches(ownerId, offset, num) {
     if (isMethodOwner(ownerId)) return fetchMethodFiches(ownerId, offset);
     var own = isOwnSource(ownerId);
@@ -613,10 +637,86 @@
   // ---------- Domain helpers ----------
   var GYM_RE = /\b(LO|zwemmen|gym|turnen|L\.O\.)\b/i;
   var THEMA_RE = /\b(WO|wereldori|godsdienst)\b/i;
-  var WO_RE = /\bWO\b|wereldori/i;
-  var GD_RE = /godsdienst/i;
   function isGymTitle(t) { return GYM_RE.test(t || ""); }
   function isThemaTitle(t) { return THEMA_RE.test(t || ""); }
+
+  // ---------- Thema identity ----------
+  // A whole-week thema item (WO, Godsdienst, …) needs an identity that SURVIVES assigning a
+  // fiche, because assignFiche overwrites slot.title with the fiche title. Deriving the row
+  // from the live title is what made a second themafiche swallow the first: once "Godsdienst"
+  // became "Camino 3 - Thema 'Vriendschap'" it no longer looked like Godsdienst.
+  // So: stamp a key ONCE, from origTitle (never mutated), resolved against the teacher's live
+  // top-level tags. Rows then follow the tags — a third thema needs no code change.
+  function normTitle(s) { return String(s == null ? "" : s).toLowerCase().replace(/\s+/g, " ").trim(); }
+  function themaTagFor(origTitle) {
+    var t = normTitle(origTitle); if (!t) return null;
+    var tops = topTagsForOwner(ownTagsList(), ctx.ownerId) || [];
+    // Containment either way, so "WO" matches the tag "Wereldoriëntatie" and an item titled
+    // "Godsdienst - hele week" matches the tag "Godsdienst". Longest tag title wins, so a
+    // short tag never shadows a more specific one.
+    var best = null, bestLen = -1;
+    tops.forEach(function (tag) {
+      var n = normTitle(tag.title); if (!n) return;
+      if (t.indexOf(n) < 0 && n.indexOf(t) < 0) return;
+      if (n.length > bestLen) { best = tag; bestLen = n.length; }
+    });
+    if (best) return best;
+    // Abbreviations don't share a substring with the full tag title ("WO" vs "Wereldoriëntatie"),
+    // so fall back to the canonical vak table, which already knows those aliases (VAKKEN.re) and
+    // is already mapped to the live tags by buildVakTagMap.
+    for (var i = 0; i < VAKKEN.length; i++) {
+      var v = VAKKEN[i];
+      if (!v.thema || !v.re || !v.re.test(origTitle || "")) continue;
+      var id = vakTagId(v.id); if (id == null) continue;
+      var hit = tops.filter(function (tag) { return String(tag.id) === String(id); })[0];
+      if (hit) return hit;
+    }
+    return null;
+  }
+  // Stamp themaKey/themaTagId on a full-day slot. Idempotent; safe to call again after a reload.
+  function stampThemaKey(s) {
+    if (!s || !s.isFullday || s.idCalendar === "cal_holidays") return s;
+    var tag = themaTagFor(s.origTitle || s.title);
+    if (tag) { s.themaTagId = tag.id; s.themaKey = "tag:" + tag.id; }
+    // No matching tag (e.g. a schooluitstap): still give it its own row keyed on the title,
+    // rather than letting it silently take over the WO row as the old !gd catch-all did.
+    else { s.themaTagId = null; s.themaKey = "title:" + (normTitle(s.origTitle || s.title) || "?"); }
+    return s;
+  }
+  // Boot fires fetchOwnTags() and reloadWeek() in parallel, so hydrate may stamp before the tag
+  // list exists — then every key falls back to "title:". Re-stamping is pure (origTitle never
+  // changes) and idempotent, so run it before each render and the keys heal once tags arrive.
+  function ensureThemaKeys(slots) {
+    (slots || []).forEach(function (s) {
+      if (!s.isFullday || s.idCalendar === "cal_holidays") return;
+      var hadTag = s.themaTagId != null;
+      stampThemaKey(s);
+      if (!hadTag && s.themaTagId != null && !s.vak) s.vak = s.themaTagId;
+    });
+    return slots;
+  }
+  function themaLabel(key, slots) {
+    if (key && key.indexOf("tag:") === 0) {
+      var id = key.slice(4), t = (anyTagTitle(id) || "").trim();
+      if (t) return t;
+    }
+    for (var i = 0; i < (slots || []).length; i++) if (slots[i].themaKey === key) return (slots[i].origTitle || "").trim() || "Thema";
+    return "Thema";
+  }
+  // Distinct thema keys across the given slots, ordered by the teacher's own tag order first
+  // (so WO/Godsdienst keep their familiar sequence), untagged ones alphabetically after.
+  function themaKeysOf(slots) {
+    var seen = {}, tagged = [], plain = [];
+    (slots || []).forEach(function (s) {
+      if (!s.isFullday || s.idCalendar === "cal_holidays" || !s.themaKey || seen[s.themaKey]) return;
+      seen[s.themaKey] = true;
+      (s.themaKey.indexOf("tag:") === 0 ? tagged : plain).push(s.themaKey);
+    });
+    var order = {}; (topTagsForOwner(ownTagsList(), ctx.ownerId) || []).forEach(function (t, i) { order["tag:" + t.id] = i; });
+    tagged.sort(function (a, b) { return (order[a] == null ? 1e6 : order[a]) - (order[b] == null ? 1e6 : order[b]); });
+    plain.sort(function (a, b) { return a.localeCompare(b, "nl"); });
+    return tagged.concat(plain);
+  }
   // Commit rule (for the external reader): item title = fiche title (set on assign /
   // by the attachment POST); item description = the top-level vak (subject) name.
   function descFor(slot) {
@@ -674,12 +774,18 @@
           groups: (it.groups && it.groups.length) ? it.groups : writeGroups(),
           hasAtt: !!it.has_attachments, isEditable: it.is_editable !== false,
           isGym: isGymTitle(it.title), themaFiche: isThemaTitle(it.title),
-          vak: state.settings[slotKeyStd(day, timeFromISO(it.startdate))] || "",
+          // Full-day items have no start time, so slotKeyStd() would give every one of them on
+          // a weekday the SAME settings key ("<day>|") — WO and Godsdienst would share a vak.
+          // Their vak comes from the resolved thema tag instead (set by stampThemaKey below).
+          vak: it.is_fullday_item ? "" : (state.settings[slotKeyStd(day, timeFromISO(it.startdate))] || ""),
+          themaKey: null, themaTagId: null,
           description: "", origDescription: "",
           ficheContentId: null, ficheTitle: "", origFicheContentId: null, origFicheTitle: "",
           starttime: "", endtime: "", _hydrated: false
         };
       });
+      // Stamp thema identity before anything can overwrite a title.
+      slots.forEach(function (s) { stampThemaKey(s); if (s.isFullday && s.themaTagId != null) s.vak = s.themaTagId; });
       var need = slots.filter(function (s) { return s.idCalendar !== "cal_holidays" && (s.hasAtt || !/^Lesuur\s*\d+$/.test(s.title)); });
       var chain = Promise.resolve();
       need.forEach(function (s) {
@@ -814,7 +920,8 @@
       h("div", { class: "qwp-side-grp" }, [
         h("div", { class: "qwp-side-lbl", text: "Opties" }),
         h("button", { class: "qwp-side-btn", onclick: openInstellingen, text: "Instellingen" }),
-        h("button", { class: "qwp-side-btn", onclick: openCopyPrevWeek, text: "Kopieer vorige week" })
+        h("button", { class: "qwp-side-btn", onclick: openCopyPrevWeek, text: "Kopieer vorige week" }),
+        h("button", { class: "qwp-side-btn", onclick: function () { if (window.__QWP_METHODES) window.__QWP_METHODES.open(); }, title: "Welke lessen van een methode zijn al gegeven?", text: "Methodevoortgang" })
       ]),
       h("div", { class: "qwp-side-grp" }, [
         h("div", { class: "qwp-side-lbl", text: "Lesfiches laden" }),
@@ -1001,7 +1108,7 @@
     });
     return best;
   }
-  // pv-based cell/thema lookups (mirror slotAt/weekThemaSlot/hasThemaKind but on pv).
+  // pv-based cell/thema lookups (mirror slotAt/weekThemaSlot/themaRowKeys but on pv).
   function pvSlotAt(pv, weekIdx, dayIdx, time) {
     return pv.slots.filter(function (s) {
       return s.weekIdx === weekIdx && s.dayIdx === dayIdx && s.idCalendar !== "cal_holidays" &&
@@ -1009,15 +1116,13 @@
         (s.time || (s.starttime ? String(s.starttime).slice(0, 5) : "")) === time;
     })[0] || null;
   }
-  function pvWeekThemaSlot(pv, weekIdx, kind) {
+  // Same stamped-key rule as the planner grid — print must not re-derive from the title either.
+  function pvWeekThemaSlot(pv, weekIdx, key) {
     return pv.slots.filter(function (s) {
-      if (s.weekIdx !== weekIdx || s.idCalendar === "cal_holidays") return false;
-      if (!s.isFullday) return false;
-      var gd = GD_RE.test(s.title || "");
-      return kind === "gd" ? gd : !gd;
+      return s.weekIdx === weekIdx && s.idCalendar !== "cal_holidays" && s.isFullday && s.themaKey === key;
     })[0] || null;
   }
-  function pvHasThemaKind(pv, kind) { for (var w = 0; w < pv.weeks; w++) if (pvWeekThemaSlot(pv, w, kind)) return true; return false; }
+  function pvThemaKeys(pv) { return themaKeysOf(ensureThemaKeys(pv.slots)); }
   // Single main title per cell: fiche title, else the item title unless it's a "Lesuur N"
   // placeholder (then blank). Colour precedence: the fiche's OWN tag colour (pv.ficheColor,
   // built by buildFicheColors) → the slot's settings/vak top-tag colour → neutral.
@@ -1104,7 +1209,8 @@
     var cells = exWeek.cells || {};
     var er = effectiveRows(pv, exWeek);
     var fb = commonDurationMin(pv);
-    var nBands = 0; ["wo", "gd"].forEach(function (k) { if (pvHasThemaKind(pv, k)) nBands++; });
+    var themaKeys = pvThemaKeys(pv);
+    var nBands = themaKeys.length;
     var nBreaks = 0; er.rows.forEach(function (t, idx) { if (breakAfterEff(er, idx)) nBreaks++; });
     var ppm = fitPxPerMin(er, nBands, nBreaks, opts);
     var head = '<tr><th class="ptime"></th>';
@@ -1113,14 +1219,13 @@
     var rows = "";
     // Compact full-width theme band(s) (WO / Godsdienst): no time label, no "hele dag" wording.
     // Skip a band whose title is empty or a "Lesuur"-placeholder (a bare full-day filler item).
-    ["wo", "gd"].forEach(function (kind) {
-      if (!pvHasThemaKind(pv, kind)) return;
-      var s = pvWeekThemaSlot(pv, weekIdx, kind);
+    themaKeys.forEach(function (key) {
+      var s = pvWeekThemaSlot(pv, weekIdx, key);
       var p = s ? printCellParts(pv, s) : null;
       var txt = p ? (p.main || p.vak || "") : "";
       if (!txt || isLesuurPlaceholder(txt)) return;
       rows += '<tr class="pthemarow"><td class="pc pthema" colspan="6"><span class="pthema-k">' +
-        (kind === "gd" ? "Godsdienst" : "Thema") + "</span>" + esc(txt) + "</td></tr>";
+        esc(themaLabel(key, pv.slots)) + "</span>" + esc(txt) + "</td></tr>";
     });
     er.rows.forEach(function (t, idx) {
       var m = er.meta[t], endL = (m && m.end) ? m.end : "";
@@ -1490,16 +1595,15 @@
   // Whole-week theme slot (WO bucket vs Godsdienst bucket). Only a REAL all-day
   // item counts (is_fullday_item) — the theme rows exist only when Questi actually
   // carries such a multi-day field, never as an empty placeholder.
-  function weekThemaSlot(weekIdx, kind) {
+  // Matched on the STAMPED key, never on the live title — that is the whole fix.
+  function weekThemaSlots(weekIdx, key) {
     return view.slots.filter(function (s) {
-      if (s.weekIdx !== weekIdx || s.idCalendar === "cal_holidays") return false;
-      if (!s.isFullday) return false;
-      var gd = GD_RE.test(s.title || "");
-      return kind === "gd" ? gd : !gd;
-    })[0] || null;
+      return s.weekIdx === weekIdx && s.idCalendar !== "cal_holidays" && s.isFullday && s.themaKey === key;
+    });
   }
-  // A theme row of this kind is shown only if some loaded week has a real all-day item.
-  function hasThemaKind(kind) { for (var w = 0; w < view.weeks; w++) if (weekThemaSlot(w, kind)) return true; return false; }
+  function weekThemaSlot(weekIdx, key) { return weekThemaSlots(weekIdx, key)[0] || null; }
+  // Every thema row to render, in tag order. One row per distinct key that actually has an item.
+  function themaRowKeys() { return themaKeysOf(ensureThemaKeys(view.slots)); }
   // A cell is "geen school" when no item exists for that weekday+time anywhere in
   // the loaded weeks (e.g. a half-day) — distinct from a schedulable empty slot,
   // which has a placeholder item. Data-driven, adapts to any timetable.
@@ -1540,9 +1644,8 @@
       }
     }
 
-    // Theme rows: only when Questi actually has an all-day WO/Gods item this range.
-    if (hasThemaKind("wo")) appendThemaRow(grid, "WO", "wo");
-    if (hasThemaKind("gd")) appendThemaRow(grid, "Gods", "gd");
+    // Theme rows: one per whole-week item actually present, labelled by its live tag.
+    themaRowKeys().forEach(function (key) { appendThemaRow(grid, themaLabel(key, view.slots), key); });
 
     // Lesuur rows with pauze/speeltijd gap bands (both derived from live times).
     view.timeRows.forEach(function (t, idx) {
@@ -1567,13 +1670,16 @@
     refreshUndoBtn();
   }
 
-  function appendThemaRow(grid, label, kind) {
-    grid.appendChild(h("div", { class: "qwp-tt-themalbl", text: label }));
+  function appendThemaRow(grid, label, key) {
+    grid.appendChild(h("div", { class: "qwp-tt-themalbl", text: label, title: label }));
     for (var w = 0; w < view.weeks; w++) {
-      var s = weekThemaSlot(w, kind);
+      var all = weekThemaSlots(w, key), s = all[0];
       var cell;
       if (s) { cell = cellFor(s, w, 0, "thema"); }
       else { cell = h("div", { class: "qwp-cell empty thema-span", title: label }, [h("div", { class: "qwp-cell-empty-hint", text: "—" })]); }
+      // Two whole-week items under the same tag in one week is ambiguous — show the first, but
+      // say so rather than silently dropping the rest (which is what the old [0] did).
+      if (all.length > 1) cell.appendChild(h("span", { class: "qwp-thema-more", title: all.slice(1).map(function (x) { return x.origTitle; }).join(" · "), text: "+" + (all.length - 1) + " meer" }));
       cell.classList.add("thema-span");
       cell.style.gridColumn = "span 5";
       if (w > 0) cell.classList.add("wk-sep");
@@ -1690,12 +1796,18 @@
 
   // Assigning a fiche fully replaces the lesson: the slot title BECOMES the fiche
   // title (so a drop/replace visibly + on-commit renames the lesuur).
-  function assignFiche(slot, f) { var t = f.subject || f.title || ""; slot.ficheContentId = f.id; slot.ficheTitle = t; slot.ficheIsMethod = !!(f.__method || f.isMethod); if (t) slot.title = t; slot.isGym = false; slot.themaFiche = false; }
+  // A whole-week thema item KEEPS themaFiche when it receives a fiche — its description must
+  // stay "Zie themafiche." (brief.md). Clearing it made descFor write the vak tag name instead,
+  // and since neither re-detection rule fires afterwards the flag never came back.
+  function isThemaSlot(s) { return !!(s && s.isFullday && s.themaKey); }
+  function assignFiche(slot, f) { var t = f.subject || f.title || ""; slot.ficheContentId = f.id; slot.ficheTitle = t; slot.ficheIsMethod = !!(f.__method || f.isMethod); if (t) slot.title = t; slot.isGym = false; slot.themaFiche = isThemaSlot(slot); }
   // Move / swap a fiche between two slots (drag one filled cell onto another) — the
   // title (and methode-flag) travels with the fiche.
   function slotPayload(s) { return { title: s.title, ficheContentId: s.ficheContentId, ficheTitle: s.ficheTitle, ficheIsMethod: s.ficheIsMethod, isGym: s.isGym, vak: s.vak }; }
-  function applySlotPayload(s, p) { s.title = p.title; s.ficheContentId = p.ficheContentId; s.ficheTitle = p.ficheTitle; s.ficheIsMethod = p.ficheIsMethod; s.isGym = p.isGym; s.themaFiche = false; s.vak = p.vak; }
-  function clearSlotContent(s) { s.title = s.origTitle; s.ficheContentId = null; s.ficheTitle = ""; s.ficheIsMethod = false; s.isGym = false; s.themaFiche = false; s.vak = state.settings[slotKeyStd(s.dayIdx, s.time)] || ""; }
+  function applySlotPayload(s, p) { s.title = p.title; s.ficheContentId = p.ficheContentId; s.ficheTitle = p.ficheTitle; s.ficheIsMethod = p.ficheIsMethod; s.isGym = p.isGym; s.themaFiche = isThemaSlot(s); s.vak = p.vak; }
+  // Restoring a thema slot: its vak is the thema tag, never state.settings — full-day items all
+  // share the settings key "<day>|" (no start time), so WO and Godsdienst would collide there.
+  function clearSlotContent(s) { s.title = s.origTitle; s.ficheContentId = null; s.ficheTitle = ""; s.ficheIsMethod = false; s.isGym = false; s.themaFiche = isThemaSlot(s) || isThemaTitle(s.origTitle); s.vak = isThemaSlot(s) ? (s.themaTagId || "") : (state.settings[slotKeyStd(s.dayIdx, s.time)] || ""); }
   // Fully empty a slot: drop the fiche AND wipe title/description (commit writes it blank).
   function emptySlot(s) { s.title = ""; s.description = ""; s.ficheContentId = null; s.ficheTitle = ""; s.ficheIsMethod = false; s.isGym = false; s.themaFiche = false; s.vak = ""; }
   function moveOrSwap(src, dst) {
@@ -2488,6 +2600,31 @@
         return { status: ok ? STAT.OK : STAT.WARN, expected: "content.id " + cid + " is een echte lesfiche", found: ok ? "resolvet" : ("HTTP " + res.status), next: ok ? "" : "attach-POST richt zich mogelijk op verkeerde id." };
       });
     }));
+    // 4b. Methodevoortgang — the panel reads nothing else, so these two shapes are its contract.
+    checks.push(wrap("Methodelijst (/manage/methods)", "read", function () {
+      if (!shared.authed) return { status: STAT.SKIP, found: "geen sessie" };
+      return diagGet(API + "/manage/methods/" + ctx.schoolId).then(function (res) {
+        var arr = (res.json && res.json.result) || [];
+        if (!arr.length) return { status: STAT.WARN, expected: "id,name,grades,is_cluster", found: "0 methodes", next: "School heeft geen methodes — 'Uit Questi' blijft leeg." };
+        var miss = ["id", "name", "grades"].filter(function (k) { return !has(arr[0], k); });
+        return { status: miss.length ? STAT.FAIL : STAT.OK, expected: "id,name,grades,is_cluster", found: miss.length ? ("mist: " + miss.join(",")) : (arr.length + " methodes"), next: miss.length ? "Methodevoortgang → addFromQuesti aanpassen." : "" };
+      });
+    }));
+    checks.push(wrap("Methodelessen (last_used_date)", "read", function () {
+      if (!shared.authed) return { status: STAT.SKIP, found: "geen sessie" };
+      return diagGet(API + "/manage/methods/" + ctx.schoolId).then(function (r1) {
+        var m0 = ((r1.json && r1.json.result) || [])[0];
+        if (!m0) return { status: STAT.SKIP, found: "geen methode om te testen" };
+        return diagGet(API + "/methods/" + encodeURIComponent(m0.id) + "/lessons?" + qs({ is_cluster: !!m0.is_cluster, schoolId: ctx.schoolId })).then(function (res) {
+          var arr = (res.json && res.json.result) || [];
+          if (!arr.length) return { status: STAT.WARN, expected: "subject + last_used_date", found: "0 lessen voor " + m0.id };
+          // last_used_date may legitimately be null (never used) — the KEY must exist.
+          var hasKey = Object.prototype.hasOwnProperty.call(arr[0], "last_used_date");
+          var miss = ["id", "subject"].filter(function (k) { return !has(arr[0], k); }).concat(hasKey ? [] : ["last_used_date"]);
+          return { status: miss.length ? STAT.FAIL : STAT.OK, expected: "id,subject,last_used_date", found: miss.length ? ("mist: " + miss.join(",")) : (arr.length + " lessen"), next: miss.length ? "Methodevoortgang kan 'gegeven' niet meer afleiden." : "" };
+        });
+      });
+    }));
     // 5. Data sanity
     checks.push(wrap("Tellingen", "sanity", function () {
       return { expected: "fiches/tags/personen/slots", found: "tags(own):" + ownTagsList().length + " personen:" + view.people.length + " slots(week):" + view.slots.length };
@@ -2772,11 +2909,11 @@
         for (var dh = 0; dh < 5; dh++) grid.appendChild(h("div", { class: "qwp-tt-dayhd" + (dh === 0 && wh > 0 ? " wk-sep" : "") }, [h("span", { class: "qwp-tt-daydate", text: fullDateLabel(wh * 7 + dh) })]));
       }
     }
-    ["wo", "gd"].forEach(function (kind) {
-      if (!hasThemaKind(kind)) return;
-      grid.appendChild(h("div", { class: "qwp-tt-themalbl", text: kind === "gd" ? "Gods" : "WO" }));
+    themaRowKeys().forEach(function (key) {
+      var lbl = themaLabel(key, view.slots);
+      grid.appendChild(h("div", { class: "qwp-tt-themalbl", text: lbl, title: lbl }));
       for (var w = 0; w < view.weeks; w++) {
-        var ts = weekThemaSlot(w, kind);
+        var ts = weekThemaSlot(w, key);
         var tc = h("div", { class: "qwp-cell thema-span qwp-rv-cell" + (w > 0 ? " wk-sep" : "") }, [reviewCellContent(ts, mode)]);
         tc.style.gridColumn = "span 5"; grid.appendChild(tc);
       }
@@ -3118,6 +3255,12 @@
     jget: jget, qs: qs, xsrfToken: xsrfToken, writeHeaders: writeHeaders,
     fetchTags: fetchTags, fetchOwnTags: fetchOwnTags, fetchSharedTags: fetchSharedTags, invalidateOwnTags: invalidateOwnTags,
     topTagsForOwner: topTagsForOwner, childTags: childTags, tagTitle: tagTitle, tagColor: tagColor,
-    ownerName: ownerName, h: h
+    ownerName: ownerName, h: h,
+    // Methodes panel (methodes.js)
+    // schoolYearBounds/usedThisYear stay private: the Methodes panel derives its own bounds so
+    // the teacher can look at a previous school year.
+    detectContext: detectContext,
+    fetchMethods: fetchMethods, fetchMethodLessons: fetchMethodLessons,
+    fetchAllFichesByTag: fetchAllFichesByTag, storeGet: storeGet, storeSet: storeSet
   };
 })();

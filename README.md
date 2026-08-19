@@ -87,6 +87,11 @@ De knoppen verschijnen **enkel op de kalenderpagina**. Sluiten doe je met het **
 
 - **Niets wordt geschreven** tot je goedkeurt; tot dan blijft alles enkel in de planner staan.
 - Wijzigingen gelden **enkel voor die ene week** (herhalende reeksen blijven ongemoeid).
+- **Themarijen** (hele-week-items zoals WO en Godsdienst) staan bovenaan het rooster, elk op een
+  **eigen rij** met de naam van je eigen tag. Heb je er drie (bv. ook MUVO), dan krijg je er drie —
+  ze worden afgeleid uit je tags, niet uit een vaste lijst. Een hele-dag-item dat bij geen enkele
+  tag hoort (bv. een schooluitstap) krijgt een eigen rij met zijn eigen titel. Bij een themarij
+  blijft de beschrijving in Questi altijd `"Zie themafiche."`.
 - **Instellingen** (vast vak per lesuur) blijft bewaard en geldt voor elke week.
 - **Diagnose** (links onderaan) draait een zelftest als er iets niet automatisch gevonden werd.
 
@@ -111,6 +116,57 @@ fiche-bibliotheek** (los van de kalender).
   blijven altijd behouden.
 - **Verwijderen** is definitief: typ `VERWIJDER`, test eerst met één fiche, dan de rest.
 - **1/2 kolommen** en **Diagnose** (zelftest) staan links. **Importeren** komt binnenkort (OPSTAP).
+
+---
+
+## Methodevoortgang gebruiken
+
+Open via **"Methodevoortgang"** in de zijbalk van de weekplanner. Het toont per methode welke
+lessen je **al gegeven** hebt en welke nog **open** staan. Het **leest alleen** — er wordt nooit
+iets naar Questi geschreven.
+
+Hoe het "gegeven" bepaalt: elke lesfiche heeft in Questi een **laatst-gebruikt-datum**. Ligt die
+binnen het **gekozen schooljaar**, dan telt de les als gegeven. Een fiche die je vorig jaar
+gebruikte staat dus terecht weer op open, met de oude datum er grijs bij.
+
+**Schooljaar kiezen.** Rechts bovenaan staat een schooljaarkiezer (huidig + de twee vorige). Handig
+om terug te kijken naar wat je vorig jaar gaf terwijl je het nieuwe jaar plant. Let op: Questi rolt
+het schooljaar al door in de zomer, dus tussen die rol en **1 september** staat alles op open —
+dat klopt (het nieuwe jaar is nog niet begonnen) en de panel zegt het ook met zoveel woorden.
+
+Een methode toevoegen kan op twee manieren:
+
+- **Uit Questi** — de methodes die je school heeft. Alle lessen komen in één keer binnen, je hoeft
+  niets te kiezen. Loopt de methode over meerdere leerjaren, dan vraagt hij welk leerjaar je volgt.
+- **Uit eigen lesfiches** — kies je **hoofdtag** (het vak), daarna open je de Lesfiche-manager in
+  **selectiemodus** en vink je aan welke fiches de methode vormen. Dat doe je één keer. De
+  **subtags** onder je hoofdtag worden automatisch de **thema's** in de tabel. In selectiemodus zijn
+  alle bewerk- en verwijderknoppen verborgen, dus er kan niets misgaan.
+
+In de tabel:
+
+- **Voortgangsbalk** bovenaan (`23/41 gegeven`), en per thema een eigen tellertje.
+- **Gaten** worden gemarkeerd: staan er open lessen tussen twee gegeven lessen, dan zie je
+  "les 14–15 overgeslagen".
+- **Klik op een statuspil** om te wisselen: automatisch → gegeven → open → automatisch. Een
+  handmatige keuze wint altijd van de berekende en is gemerkt met **handmatig**; het kruisje zet
+  hem terug op automatisch.
+- **Sorteren** op volgorde / a–z / datum, filteren met **alleen open**, en zoeken op titel.
+- Halen de titels geen lesnummers op (bv. `Les 12: …`), dan gebruikt hij de volgorde van Questi en
+  kun je rijen **verslepen**. Die volgorde wordt onthouden.
+- **Exporteer** geeft een CSV van de volledige lijst.
+- Lessen worden **gegroepeerd per thema** in de volgorde van je subtags ("Blok 1", "Blok 2", …).
+  Fiches die onder geen enkele subtag hangen komen onderaan bij **Overige**.
+
+**Back-up (tussen computers).** De knop **Back-up** rechts bovenaan exporteert al je methodes naar
+één JSON-bestand en leest zo'n bestand ook weer in. Handig om je opzet van je schoollaptop naar je
+thuis-pc te zetten zonder alles opnieuw aan te vinken. Alleen jouw instellingen reizen mee (welke
+fiches, hun volgorde, handmatige aanpassingen); titels en datums worden op de andere computer
+gewoon opnieuw uit Questi gelezen. Bij importeren zie je eerst wat er nieuw is en wat overschreven
+wordt. Komt het bestand van een andere school, dan waarschuwt hij — lesfiche-ids zijn per school.
+
+Alleen jouw keuzes worden bewaard (welke fiches, hun volgorde, handmatige aanpassingen). Titels en
+datums worden élke keer opnieuw opgehaald, zodat de tabel nooit uit de pas loopt met Questi.
 
 ---
 
@@ -276,8 +332,32 @@ fiches appear in the owner selectors, filter panels, and global search (badged *
 
 | File | Role |
 |---|---|
-| `manifest.json` | MV3; content scripts `planner.js` → `lessons.js` → `content.js`, css `planner.css` + `lessons.css`, on `*://www.questi.com/*`. |
+| `manifest.json` | MV3; content scripts `planner.js` → `lessons.js` → `methodes.js` → `content.js`, css `planner.css` + `lessons.css` + `methodes.css`, on `*://www.questi.com/*`. |
 | `background.js` | Service worker; relays the toolbar/Alt+P toggle to the tab. |
 | `content.js` | Boot/relay; injects the **Weekplanner** + **Lesfiches** toolbar chips (only on `…/calendar`). |
 | `planner.js` / `planner.css` | The week planner (`#qwp-overlay`). Exports `window.__QWP_SHARED` (ctx + helpers) and `window.__QWP_OPEN_LESSONS`. |
-| `lessons.js` / `lessons.css` | The Lesfiche-manager (`#qwl-overlay`); consumes `__QWP_SHARED`; own storage key `qwp_lessons_v1`. |
+| `lessons.js` / `lessons.css` | The Lesfiche-manager (`#qwl-overlay`); consumes `__QWP_SHARED`; own storage key `qwp_lessons_v1`. Also exports `openPicker()` — read-only selectiemodus used by the Methodes panel. |
+| `methodes.js` / `methodes.css` | Methodevoortgang (`#qwm-overlay`); consumes `__QWP_SHARED`; storage key `qwp_methodes_v1`. **Never writes to Questi.** |
+
+### Methodevoortgang internals
+
+Status comes from one field only: `last_used_date` on the fiche, tested with `usedThisYear()`
+against `schoolYearBounds()`. There is no calendar scan.
+
+`qwp_methodes_v1` stores only the teacher's decisions — never fiche titles or dates, which are
+re-fetched live on every open so the table cannot drift:
+
+```js
+{ methodes:[{ id, name, source:"questi"|"tag",
+              methodKey, isCluster, publisher, grade,      // source "questi"
+              tagId, ownerId,                               // source "tag"
+              color, order:["<ficheId>"…],                  // order[] IS the membership list
+              overrides:{ "<ficheId>": { status:"given"|"open", on:"YYYY-MM-DD" } } }],
+  activeId, sortKey:"order"|"az"|"date", onlyOpen }
+```
+
+Blocks: for `source:"tag"` the block is the **subtag** the fiche hangs under (one
+`fetchAllFichesByTag` per child of the hoofdtag). Vendor methodes carry no tags, so their blocks are
+parsed out of the title (`blok|thema|hoofdstuk \d+`). Lesson numbers come from `les|nr \d+` in the
+title, and are only trusted when **at least half** the titles yield one — otherwise Questi's own
+order is used and rows become drag-reorderable.
